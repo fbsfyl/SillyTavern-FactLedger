@@ -1,4 +1,4 @@
-﻿import { getContext } from '../../../extensions.js';
+import { getContext } from '../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../script.js';
 import {
     createEmptyState,
@@ -32,13 +32,14 @@ import {
     normalizeAccess,
 } from './lib/ledger.js';
 import { DEFAULT_GENRE, GENRE_PRESETS, getGenrePreset, listGenrePresets } from './lib/genres.js';
+import { classifyExtractionFailure, failureMessage } from './lib/refusal.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/SlashCommandArgument.js';
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.13.5';
+const VERSION = '0.13.6';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -83,6 +84,7 @@ let editorMode = false;
 let settleRunning = false;
 let settlePending = false;
 let settleQueued = false;
+let lastExtractionFailure = { kind: '', at: 0 };
 let knowledgeEntries = [];
 const collapsedStatusPanels = new Set();
 
@@ -233,6 +235,42 @@ function notifyReveals(reveals, state) {
 }
 
 /**
+ * 提取失败要同时落到状态栏、面板和 toast；同一类失败 60 秒内只弹一次，
+ * 避免自动结算连续失败时刷屏。
+ */
+function showExtractionFailure(failure) {
+    const message = failureMessage(failure);
+    const state = getState();
+    state.meta.lastError = message;
+    saveState();
+    try {
+        renderPanel();
+        renderStatusBar();
+    } catch (err) {
+        error('render extraction failure failed', err);
+    }
+    setStatus(message);
+
+    const now = Date.now();
+    if (lastExtractionFailure.kind === failure.kind && now - lastExtractionFailure.at < 60000) return;
+    lastExtractionFailure = { kind: failure.kind, at: now };
+
+    const toast = globalThis.toastr || (typeof toastr !== 'undefined' ? toastr : null);
+    const method = ['refusal', 'content_filter', 'auth', 'timeout', 'network'].includes(failure.kind)
+        ? 'error'
+        : 'warning';
+    if (typeof toast?.[method] === 'function') {
+        toast[method](message, 'FactLedger 提取失败', {
+            timeOut: 15000,
+            extendedTimeOut: 8000,
+            closeButton: true,
+        });
+    } else {
+        error('[FactLedger] 提取失败：', message);
+    }
+}
+
+/**
  * Rebuild the ledger at the newest chat prefix that still matches the op log.
  * Used for edits, deletes, swipes, branches and checkpoint restores.
  */
@@ -353,6 +391,7 @@ function withTimeout(promise, ms, label) {
 async function callExtractionModel(system, user, maxTokens, options = {}) {
     const ctx = getContext();
     const settings = getSettings();
+    const meta = options.meta || null;
     // 一次结算共用同一个截止时间：重试、换备选连接、解析失败重试都算在这 20 秒里。
     const deadline = Number(options.deadline) || (Date.now() + EXTRACTION_TIMEOUT_MS);
     const remaining = () => Math.max(0, deadline - Date.now());
@@ -369,6 +408,10 @@ async function callExtractionModel(system, user, maxTokens, options = {}) {
             removeReasoning: true,
             skipWIAN: true,
         }), timeoutFor('提取请求'), '提取请求');
+        if (meta) {
+            meta.finishReason = '';
+            meta.status = 0;
+        }
         if (!String(content ?? '').trim()) {
             throw new Error('提取模型返回空内容（可能是思考 token 占满，请提高提取最大 token）');
         }
@@ -394,17 +437,17 @@ async function callExtractionModel(system, user, maxTokens, options = {}) {
     ];
 
     if (!profileId) {
-        return requestExtraction(service, fallbackId, messages, maxTokens, 0, delayMs, deadline);
+        return requestExtraction(service, fallbackId, messages, maxTokens, 0, delayMs, deadline, meta);
     }
 
     try {
-        return await requestExtraction(service, profileId, messages, maxTokens, retries, delayMs, deadline);
+        return await requestExtraction(service, profileId, messages, maxTokens, retries, delayMs, deadline, meta);
     } catch (err) {
         if (!fallbackId || fallbackId === profileId) {
             throw err;
         }
         setStatus(`主连接提取失败，改用备选连接：${errorDetail(err)}`);
-        return requestExtraction(service, fallbackId, messages, maxTokens, 0, delayMs, deadline);
+        return requestExtraction(service, fallbackId, messages, maxTokens, 0, delayMs, deadline, meta);
     }
 }
 
@@ -420,7 +463,7 @@ function thinkingOffPayload(profileId) {
     return /deepseek/i.test(profileModelName(profileId)) ? { reasoning_effort: 'none' } : {};
 }
 
-async function requestExtraction(service, profileId, messages, maxTokens, retries, delayMs, deadline = Date.now() + EXTRACTION_TIMEOUT_MS) {
+async function requestExtraction(service, profileId, messages, maxTokens, retries, delayMs, deadline = Date.now() + EXTRACTION_TIMEOUT_MS, meta = null) {
     const requestOptions = {
         extractData: true,
         includePreset: getSettings().extractionIncludePreset === true,
@@ -460,6 +503,16 @@ async function requestExtraction(service, profileId, messages, maxTokens, retrie
                 }
             }
             const content = response?.content ?? response?.text ?? '';
+            if (meta) {
+                meta.finishReason = String(
+                    response?.finish_reason
+                    || response?.finishReason
+                    || response?.response?.finish_reason
+                    || response?.choices?.[0]?.finish_reason
+                    || '',
+                );
+                meta.status = Number(response?.status ?? response?.statusCode ?? 0) || 0;
+            }
             if (!String(content).trim()) {
                 throw new Error('提取模型返回空内容（可能是思考 token 占满，请提高提取最大 token）');
             }
@@ -504,6 +557,8 @@ async function settleLedger(options = {}) {
     settlePending = true;
     renderStatusBar();
     setStatus('正在结算本幕…');
+    const settleStartedAt = Date.now();
+    const extractionMeta = {};
     try {
         const state = getState();
         if (detectAnchorMutation(ctx.chat, state.meta.lastProcessedMessage, state.meta.lastProcessedHash)) {
@@ -529,15 +584,32 @@ async function settleLedger(options = {}) {
         });
         // 本轮结算最多 20 秒：首次请求、重试和解析失败重试共用这个截止时间。
         const extractionDeadline = Date.now() + EXTRACTION_TIMEOUT_MS;
-        const raw = await callExtractionModel(system, user, settings.maxTokens, { deadline: extractionDeadline });
+        const raw = await callExtractionModel(system, user, settings.maxTokens, {
+            deadline: extractionDeadline,
+            meta: extractionMeta,
+        });
         let parsed;
+        let lastRaw = raw;
         try {
             parsed = parseExtractionResponse(raw);
         } catch (err) {
             // 模型偶尔会漏右括号；解析失败重试一次，不直接放弃整轮结算。
             log('提取 JSON 解析失败，重试一次', err.message);
-            const retryRaw = await callExtractionModel(system, user, settings.maxTokens, { deadline: extractionDeadline });
-            parsed = parseExtractionResponse(retryRaw);
+            try {
+                const retryRaw = await callExtractionModel(system, user, settings.maxTokens, {
+                    deadline: extractionDeadline,
+                    meta: extractionMeta,
+                });
+                lastRaw = retryRaw;
+                parsed = parseExtractionResponse(retryRaw);
+            } catch (retryErr) {
+                showExtractionFailure(classifyExtractionFailure(lastRaw, retryErr, extractionMeta));
+                return null;
+            }
+        }
+        if (parsed && !parsed.ops.length && typeof parsed.error === 'string' && parsed.error.trim()) {
+            showExtractionFailure({ kind: 'refusal', detail: parsed.error.trim() });
+            return null;
         }
 
         const protagonistAliases = [...PROTAGONIST_ALIASES, ctx.name1].filter(Boolean);
@@ -660,20 +732,16 @@ async function settleLedger(options = {}) {
         saveState();
         refreshInjection();
         renderPanel();
+        lastExtractionFailure = { kind: '', at: 0 };
         setStatus(
-            `结算完成：应用 ${result.applied.length} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${parsed.leaks.length} 条。`,
+            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${result.applied.length} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${parsed.leaks.length} 条。`,
         );
         // reveal 改变了谁知道，必须让用户当场看到；只提示真正改了档位的 reveal。
         notifyReveals((result.changedOps || []).filter((op) => op && op.op === 'reveal'), nextState);
         log('settle result', result);
         return result;
     } catch (err) {
-        const state = getState();
-        const detail = errorDetail(err);
-        state.meta.lastError = detail;
-        saveState();
-        renderPanel();
-        setStatus(`结算失败：${detail}`);
+        showExtractionFailure(classifyExtractionFailure('', err, extractionMeta));
         error('settle failed', err);
         return null;
     } finally {
@@ -1561,6 +1629,10 @@ function renderStatusBar() {
     const majorNotice = majorWarning
         ? `<div class="factledger-statusbar-notice">${escapeHtml(majorWarning)}</div>`
         : '';
+    const lastError = String(state.meta?.lastError || '').trim();
+    const errorNotice = lastError
+        ? `<div class="factledger-statusbar-notice factledger-statusbar-error">提取失败：${escapeHtml(lastError.slice(0, 180))}</div>`
+        : '';
 
     bar.innerHTML = `
         <div class="factledger-statusbar-top">
@@ -1568,6 +1640,7 @@ function renderStatusBar() {
             <span class="factledger-statusbar-open" title="打开完整台账">打开台账</span>
         </div>
         ${loading}
+        ${errorNotice}
         ${leakNotice}
         ${majorNotice}
         ${panels.map((panel) => {
