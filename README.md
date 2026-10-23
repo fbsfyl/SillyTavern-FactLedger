@@ -2,12 +2,12 @@
 
 [![release](https://img.shields.io/github/v/release/fbsfyl/SillyTavern-FactLedger?label=release)](https://github.com/fbsfyl/SillyTavern-FactLedger/releases)
 [![license](https://img.shields.io/github/license/fbsfyl/SillyTavern-FactLedger)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-131-brightgreen)](test/ledger.test.mjs)
+[![tests](https://img.shields.io/badge/tests-130-brightgreen)](test/ledger.test.mjs)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.19%2B-5b4ee6)](https://github.com/SillyTavern/SillyTavern)
 
 面向 SillyTavern 文字冒险 / 角色扮演的结构化记忆扩展：**当前状态台账 + 双时态历史 + 秘密知情约束**。
 
-- 版本：`0.15.4`
+- 版本：`0.15.5`
 - 类型：SillyTavern 正式扩展（manifest + 前端模块）
 - 依赖：无第三方 npm 依赖
 
@@ -127,7 +127,7 @@ SillyTavern-FactLedger/
 │   ├── ledger.js          # 纯逻辑：双时态/认知/注入/泄露/健康检查
 │   └── genres.js          # 题材预设
 ├── test/
-│   └── ledger.test.mjs    # 131 个单元测试
+│   └── ledger.test.mjs    # 130 个单元测试
 ├── docs/
 │   └── DESIGN.md          # 数据模型 / 提取协议 / 注入装配
 ├── CHANGELOG.md
@@ -256,7 +256,7 @@ git clone https://github.com/fbsfyl/SillyTavern-FactLedger
 ```
 
 - `delta` 正数 = 获得，负数 = 消耗；
-- 每次变化写入 `quantityHistory`（before/after/delta/reason/evidence）；
+- 每次变化直接改 `quantity`；不再单独记数量历史；
 - 数量不会降到负数，最低为 0；
 - 给另一个角色加钱时，可写 `character` + `itemName` + `unit`，不存在会自动创建。
 

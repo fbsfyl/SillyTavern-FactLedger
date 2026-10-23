@@ -569,9 +569,6 @@ test('物品数量与货币：add_item 合并、adjust_item 增减并记录历�
     state = result.state;
     const after = state.characters.lin_yuan.items.find((entry) => entry.id === 'i_spirit' && entry.validTo == null);
     assert.equal(after.quantity, 120);
-    assert.equal(after.quantityHistory.length, 1);
-    assert.equal(after.quantityHistory[0].delta, -30);
-    assert.equal(after.quantityHistory[0].after, 120);
 });
 
 test('adjust_item 可为指定角色创建货币物品', () => {
@@ -651,7 +648,6 @@ test('remove_item / clear_items / clear_currency / set_item_quantity', () => {
     state = result.state;
     const removedSword = state.characters.lin_yuan.items.find((entry) => entry.id === 'i_sword');
     assert.ok(removedSword.validTo);
-    assert.equal(removedSword.removedReason, '被夺走');
 
     result = run(state, [
         { op: 'clear_items', character: 'lin_yuan', reason: '被洗劫', validFrom: 'ch03', evidence: 'msg:5', confidence: 0.9 },
@@ -667,7 +663,6 @@ test('remove_item / clear_items / clear_currency / set_item_quantity', () => {
     state = result.state;
     const cleared = state.characters.lin_yuan.items.find((entry) => entry.id === 'i_spirit' && entry.validTo == null);
     assert.equal(cleared.quantity, 0);
-    assert.equal(cleared.quantityHistory.length, 1);
 
     result = run(state, [
         { op: 'set_item_quantity', item: 'i_spirit', quantity: 7, reason: '重新获得', validFrom: 'ch05', evidence: 'msg:7', confidence: 0.9 },
@@ -675,7 +670,6 @@ test('remove_item / clear_items / clear_currency / set_item_quantity', () => {
     state = result.state;
     const set = state.characters.lin_yuan.items.find((entry) => entry.id === 'i_spirit' && entry.validTo == null);
     assert.equal(set.quantity, 7);
-    assert.equal(set.quantityHistory.length, 2);
 });
 
 test('注入只为故事主角显示物品，NPC 物品不进入公开块', () => {
@@ -2264,28 +2258,4 @@ test('称呼类目击者有歧义时回落主角级，不乱放宽', () => {
         },
     ]);
     assert.equal(entityAccess(result.state.facts.f1), 'protagonist');
-});
-
-test('角色个人事实参与泄露检测，并可用 reveal 放宽', () => {
-    const state = tierState();
-    state.characters.user.facts.push({ text: '你私藏半块玉牌', access: 'protagonist' });
-    const leaks = detectLeaks(state, '王掌柜盯着你：“那半块玉牌呢？”', ['wang']);
-    assert.ok(leaks.some((leak) => (
-        leak.target?.character === 'user' && leak.target?.fact === '你私藏半块玉牌'
-    )));
-
-    const result = run(state, [
-        {
-            op: 'reveal',
-            character: 'user',
-            fact: '你私藏半块玉牌',
-            to: 'wang',
-            method: '当面拿出',
-            access: 'public',
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-    ]);
-    const entry = result.state.characters.user.facts.find((item) => item.text === '你私藏半块玉牌');
-    assert.equal(entityAccess(entry), 'public');
 });

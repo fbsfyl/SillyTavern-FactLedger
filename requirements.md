@@ -77,5 +77,5 @@
 | 浏览器 | Chromium（IDE 内置浏览器） |
 | 主 API | Featherless.ai，OpenAI 兼容 |
 | 主模型 | `aifeifei798/Qwen3.8-Queen-27B`（测试时） |
-| 单元测试 | 131/131 通过 |
+| 单元测试 | 130/130 通过 |
 | UI/注入/结算 | 浏览器 DOM + JS 求值验证通过 |

@@ -218,7 +218,6 @@
 ```json
 { "op": "reveal", "fact": "f_orb", "to": "su_wan", "method": "被看见" }
 { "op": "reveal", "character": "user", "field": "realm", "to": "su_wan", "method": "战斗中暴露" }
-{ "op": "reveal", "character": "user", "fact": "你私藏半块玉牌", "to": "su_wan", "method": "当面拿出" }
 { "op": "reveal", "item": "i_orb", "to": "su_wan", "method": "被看见" }
 { "op": "reveal", "relation": "su_wan", "to": "wang_shop", "method": "被迫承认" }
 { "op": "reveal", "skill": "sk_qingmu", "to": "su_wan", "method": "当面运功" }

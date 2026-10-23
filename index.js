@@ -35,7 +35,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.15.4';
+const VERSION = '0.15.5';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -1209,17 +1209,6 @@ function renderKnowledge(body) {
                 ref: { kind: 'ability', charId: character.id, traitId: ability.id },
             });
         }
-        (character.facts || []).forEach((fact, index) => {
-            if (!isGated(fact)) return;
-            cards.push({
-                type: '个人事实',
-                id: name,
-                text: fact.text || fact,
-                access: entityAccess(fact, 'public'),
-                known: knowledgeSummary(fact, state),
-                ref: { kind: 'characterFact', charId: character.id, index },
-            });
-        });
     }
 
     knowledgeEntries = cards;
@@ -1268,8 +1257,6 @@ function resolveEntity(ref) {
             return state.characters[ref.charId]?.skills?.find((skill) => skill.validTo == null && skill.id === ref.traitId);
         case 'ability':
             return state.characters[ref.charId]?.abilities?.find((ability) => ability.validTo == null && ability.id === ref.traitId);
-        case 'characterFact':
-            return state.characters[ref.charId]?.facts?.[ref.index];
         default:
             return null;
     }
@@ -1687,23 +1674,19 @@ function describeReviewOp(op) {
 
 /** 叙事者已经写漏了：把这条泄漏接成既成事实，或当它没发生。 */
 function findFactForLeak(state, leak) {
-    const id = leak.factId || leak.fact || '';
+    const id = leak.fact || '';
     if (state.facts?.[id]) return state.facts[id];
     const text = String(leak.factText || leak.fact || '').trim();
     return Object.values(state.facts || {}).find((fact) => String(fact.text || '').trim() === text) || null;
 }
 
-/** 把泄露记录还原成 reveal 的目标；0.13.4 之前只有顶层事实。 */
+/** 把泄露记录还原成 reveal 的目标。 */
 function leakRevealTarget(state, leak) {
     const target = leak.target || {};
     if (target.item) return { item: target.item, label: target.item };
     if (target.skill) return { skill: target.skill, label: target.skill };
     if (target.ability) return { ability: target.ability, label: target.ability };
     if (target.relation) return { relation: target.relation, label: `关系 ${target.relation}` };
-    if (target.character && target.fact) {
-        const name = state.characters?.[target.character]?.name || target.character;
-        return { character: target.character, fact: target.fact, label: `${name}：${target.fact}` };
-    }
     if (target.character && target.field) {
         const name = state.characters?.[target.character]?.name || target.character;
         return { character: target.character, field: target.field, label: `${name}.${target.field}` };
@@ -1733,7 +1716,6 @@ function acknowledgeLeak(index) {
         ...(target.ability ? { ability: target.ability } : {}),
         ...(target.relation ? { relation: target.relation } : {}),
         ...(target.character && target.field ? { character: target.character, field: target.field } : {}),
-        ...(target.character && target.fact ? { character: target.character, fact: target.fact } : {}),
         evidence: 'msg:0',
         confidence: 1,
     };

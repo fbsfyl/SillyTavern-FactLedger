@@ -3,6 +3,12 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
 
+## 0.15.5
+
+- 删除 `character.facts` 整条僵尸链路：0.15.0 后已无写入源，仍保留注入、泄露检测、面板与 `reveal character+fact`
+- 删除只写不读的审计字段：`quantityHistory`、`removedReason` / `removedEvidence`、条目 `note`、`updatedAt`、关系上的 `evidence` / `confidence`、落库的 `fact.witnesses`
+- 测试：删除个人事实用例，数量历史断言改为直接断言 `quantity`（130 个单测）
+
 ## 0.15.4
 
 - 修复：面板标题、调试输出与斜杠命令里的版本号仍停在 0.14.2
