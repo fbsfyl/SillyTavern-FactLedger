@@ -240,9 +240,10 @@ test('事件 op 在新结算入口被过滤并计数', () => {
         { op: 'set', character: 'user', field: 'realm', value: '练气三层' },
         { op: 'append_event', event: { problem: 'x', result: 'y' } },
         { op: 'add_event', event: { problem: 'x', result: 'y' } },
+        { op: 'reveal', event: 'e0001', to: 'su' },
     ]);
     assert.equal(ops.length, 1);
-    assert.equal(ignored, 2);
+    assert.equal(ignored, 3);
 });
 
 test('0.14.0 设置迁移只清一次，保留用户自定义规则', () => {
@@ -258,6 +259,52 @@ test('0.14.0 设置迁移只清一次，保留用户自定义规则', () => {
     const snapshot = JSON.stringify(settings);
     assert.equal(migrateRetiredSettings(settings), false);
     assert.equal(JSON.stringify(settings), snapshot);
+});
+
+test('旧默认规则的其余「旧事」措辞也会一起迁移', () => {
+    const settings = {
+        narrativeRules: '正文没写时按台账：旧事离开上下文也按这里；要避免两种错法：① 旧事超出上下文。',
+    };
+    migrateRetiredSettings(settings);
+    assert.doesNotMatch(settings.narrativeRules, /旧事/);
+    assert.match(settings.narrativeRules, /当前事实与知情关系离开上下文/);
+    assert.match(settings.narrativeRules, /旧秘密超出上下文/);
+});
+
+test('旧日志里的事件 op 不再解析姓名或新建角色', () => {
+    const state = createEmptyState();
+    state.meta.identityVersion = 0;
+    state.characters = {
+        甲: {
+            id: '甲', name: '甲', tier: 'major', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
+        },
+    };
+    state.meta.history = [{
+        to: 0,
+        ops: [{
+            op: 'append_event',
+            event: { actors: ['苏婉'], witnesses: ['王掌柜'], problem: 'x', result: 'y' },
+        }],
+    }];
+    migrateStableIds(state);
+    const names = Object.values(state.characters).map((character) => character.name).sort();
+    assert.equal(names.length, 1);
+    assert.ok(!names.includes('苏婉'));
+    assert.ok(!names.includes('王掌柜'));
+    assert.deepEqual(state.meta.history[0].ops[0].event.actors, ['苏婉']);
+});
+
+test('回放会跳过事件 op，不造角色也不重建事件', () => {
+    const history = [{
+        to: 0,
+        ops: [{
+            op: 'append_event',
+            event: { actors: ['路人甲'], witnesses: ['路人乙'], problem: 'x', result: 'y', sourceMessages: [0] },
+        }],
+    }];
+    const replayed = replayHistory(history, 0);
+    assert.equal(Object.keys(replayed.characters).length, 0);
+    assert.equal(replayed.events.length, 0);
 });
 
 test('旧聊天里的事件待复核会被清掉', () => {

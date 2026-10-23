@@ -1,4 +1,4 @@
-# Fact Ledger 测试计划
+﻿# Fact Ledger 测试计划
 
 > 版本：v4（2026-10-20）
 > 状态：已执行 A / C / B；D 的浏览器冒烟未执行。结果见 `测试报告-20261020.md`。
@@ -40,8 +40,8 @@
 | ID | 测试项 | 预期 |
 |---|---|---|
 | A01 | `node --check` | index.js / ledger.js / genres.js 全通过 |
-| A02 | `node --test` | 36/36 |
-| A03 | manifest | 0.6.0 |
+| A02 | `node --test` | 169/169 |
+| A03 | manifest | 0.14.1 |
 | A04 | 残留检查 | 无 `perceived*` / `[K:narrator]` / NPC 隔离路径 |
 
 ---
@@ -105,7 +105,7 @@ B07 / B08 用主 RP 模型 `aifeifei798/Qwen3.8-Queen-27B`，各 1 次，tempera
 | D05 | 状态栏 | 五块、只显示主角、NPC 真相 |
 | D06 | 设置 | 题材、profile、开关、编辑知情者 |
 
-这些主要由现有 36 个单测覆盖，浏览器只做一次冒烟。
+这些主要由现有 169 个单测覆盖，浏览器只做一次冒烟。
 
 ---
 

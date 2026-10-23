@@ -1,7 +1,16 @@
-# 更新日志
+﻿# 更新日志
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+
+## 0.14.2
+
+- 修复：旧日志里的事件 op 不再被 `migrateStableIds` 解析姓名或新建角色
+- 修复：回放统一跳过事件 op（含 `reveal {event}`），旧日志不会再造幽灵角色或重建事件
+- 修复：设置迁移补齐旧默认【知情】里的两处「旧事」措辞，迁移后仍能被题材切换识别
+- 修复：`merge_character` 不再改写旧 `state.events`
+- 修复：待复核清理与采纳入口兼容扁平条目，不会漏掉旧事件记录
+- 169 个单元测试
 
 ## 0.14.1
 
@@ -10,7 +19,7 @@
 - 修复：事件数据不再被 normalize / sanitize / migrateStableIds 改写，也不再用旧事件里的名字新建角色
 - 测试：抽出 `filterRetiredOps` 与 `migrateRetiredSettings` 并覆盖；补 reveal `changedOps` 与待复核清理用例
 - 文档：风险清单、测试计划、对比文档、情景测试脚本同步事件退役
-- 166 个单元测试
+- 169 个单元测试
 
 ## 0.14.0
 

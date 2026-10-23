@@ -40,7 +40,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.14.1';
+const VERSION = '0.14.2';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -115,7 +115,7 @@ function getSettings() {
     if (typeof settings.narrativeRules !== 'string') {
         settings.narrativeRules = getGenrePreset(settings.genrePreset).narrativeRules || '';
     }
-    // 0.14.1 事件退役：只清理旧默认文案，不动用户自己写的规则。
+    // 0.14.0 事件退役：只清理旧默认文案，不动用户自己写的规则。
     if (migrateRetiredSettings(settings)) saveSettingsDebounced();
     return settings;
 }
@@ -1815,7 +1815,8 @@ function acceptReview(index) {
     const state = getState();
     const entry = state.meta?.review?.[index];
     if (!entry) return;
-    const { needsReview, ...op } = entry.op || entry;
+    const rawOp = entry?.op && typeof entry.op === 'object' ? entry.op : entry;
+    const { needsReview, ...op } = rawOp;
     if (op?.op === 'append_event' || op?.op === 'add_event') {
         dismissReview(index);
         setStatus('事件已退役，这条待复核已丢弃。');

@@ -1,4 +1,4 @@
-# 环境与依赖要求
+﻿# 环境与依赖要求
 
 本扩展是 **SillyTavern 前端扩展**，没有 Python 依赖，也没有需要 `npm install` 的第三方运行时依赖。下面列出运行、测试和模型侧的要求。
 
@@ -77,5 +77,5 @@
 | 浏览器 | Chromium（IDE 内置浏览器） |
 | 主 API | Featherless.ai，OpenAI 兼容 |
 | 主模型 | `aifeifei798/Qwen3.8-Queen-27B`（测试时） |
-| 单元测试 | 166/166 通过 |
+| 单元测试 | 169/169 通过 |
 | UI/注入/结算 | 浏览器 DOM + JS 求值验证通过 |
