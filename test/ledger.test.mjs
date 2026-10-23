@@ -454,7 +454,7 @@ test('主角秘密字段不进公开块，只进秘密知情', () => {
 
     const text = assembleInjection(state, { tokenBudget: 3000, activeCharacterIds: ['lin_yuan', 'su_wan'], protagonistId: 'lin_yuan' });
     const blockStart = text.indexOf('【角色·林远】');
-    const blockEnd = text.indexOf('【秘密知情】');
+    const blockEnd = text.indexOf('【秘密知情】', blockStart);
     const publicBlock = text.slice(blockStart, blockEnd);
 
     assert.match(publicBlock, /location：青云宗/);
@@ -952,7 +952,7 @@ test('NPC 对主角秘密的错误认知渲染在秘密知情里，真相仍属�
         protagonistId: 'lin_yuan',
     });
     const blockStart = text.indexOf('【角色·林远】');
-    const blockEnd = text.indexOf('【秘密知情】');
+    const blockEnd = text.indexOf('【秘密知情】', blockStart);
     const protagonistBlock = text.slice(blockStart, blockEnd);
 
     // 真相在秘密知情里；NPC 的错误认知同一条内渲染
@@ -1016,6 +1016,16 @@ test('提取提示的当前台账带上角色字段与档位', () => {
     const { user } = buildExtractionPrompt(state, []);
     assert.match(user, /realm/);
     assert.match(user, /筑基一层/);
+});
+
+test('提取提示的当前台账带上角色别名', () => {
+    const state = createEmptyState();
+    state.characters.su = {
+        id: 'su', name: '苏绾', aliases: ['月白长裙女修'], tier: 'major', access: 'friend',
+        state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
+    };
+    const { user } = buildExtractionPrompt(state, []);
+    assert.match(user, /月白长裙女修/);
 });
 
 test('estimateTokens 对中文返回正数', () => {
@@ -1211,7 +1221,7 @@ test('未了结的线索单独注入，了结后消失', () => {
 test('注入头部声明在场不等于知情', () => {
     const state = createEmptyState();
     const text = assembleInjection(state, { protagonistId: 'user' });
-    assert.match(text, /在场、看到、正文没提他不知道，都不等于他知道/);
+    assert.match(text, /在场、看到，不等于知情/);
     assert.match(text, /反复提到某条秘密，也不等于它已经公开/);
 });
 
@@ -1260,8 +1270,7 @@ test('秘密线索在【未了结】里带知情标记，不再重复进秘密�
     state.scene = { time: '夜', place: '客栈', participants: ['user', '苏婉'] };
     const text = assembleInjection(state, { activeCharacterIds: ['user', '苏婉'], protagonistId: 'user' });
     assert.match(text, /【未了结】[\s\S]*\[K:你、柳三娘\]/);
-    const secretPart = text.split('【秘密知情】')[1] || '';
-    assert.doesNotMatch(secretPart, /九幽兰/);
+    assert.doesNotMatch(text, /【秘密知情】\n/);
 });
 
 test('NPC 的秘密字段带知情标记，离场名录不显示', () => {
@@ -1421,7 +1430,7 @@ test('提取提示词覆盖档位写法与 set_tier', () => {
     const { system, user } = buildExtractionPrompt(createEmptyState(), [], {});
     assert.match(system, /access:"protagonist"/);
     assert.match(system, /set_tier/);
-    assert.match(system, /知情 = 角色档位 ≥ 条目档位/);
+    assert.match(system, /知情由角色档位 ≥ 条目档位决定/);
     assert.match(system, /定档顺序/);
     assert.match(user, /set_tier \{character,access,reason\}/);
     assert.match(user, /add_fact \{fact:\{id,text,access\?,witnesses\?/);
@@ -1533,8 +1542,8 @@ test('注入把知情写成正文优先，并给出台账默认', () => {
     assert.match(text, /不要用台账反驳正文/);
     assert.match(text, /默认知情=苏绾/);
     assert.match(text, /默认不知情=王掌柜/);
-    assert.match(text, /当前事实与知情关系离开上下文也按这里/);
-    assert.match(text, /在场、看到、正文没提他不知道，都不等于他知道/);
+    assert.match(text, /以下是角色与世界的真相，只用于判断谁知道/);
+    assert.match(text, /在场、看到，不等于知情/);
 });
 
 test('提取提示要求正文明确写才知道', () => {

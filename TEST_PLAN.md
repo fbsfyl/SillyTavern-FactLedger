@@ -40,8 +40,8 @@
 | ID | 测试项 | 预期 |
 |---|---|---|
 | A01 | `node --check` | index.js / ledger.js / genres.js 全通过 |
-| A02 | `node --test` | 130/130 |
-| A03 | manifest | 0.15.5 |
+| A02 | `node --test` | 131/131 |
+| A03 | manifest | 0.15.6 |
 | A04 | 残留检查 | 无 `perceived*` / `[K:narrator]` / NPC 隔离路径 |
 
 ---
