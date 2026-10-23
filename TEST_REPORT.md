@@ -1,5 +1,7 @@
 # 情景测试报告
 
+> 历史报告：0.14.0 起事件台账退役，报告中的事件相关断言不再适用；当前单测数量以 README / CHANGELOG 为准。
+
 - 日期：2026-10-21
 - 插件：SillyTavern-FactLedger（事实台账）
 - 提取模型：`deepseek-flash` @ `https://api.deepseek.com/v1`

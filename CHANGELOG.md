@@ -3,6 +3,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
 
+## 0.14.1
+
+- 修复：旧安装持久化的叙事规则 / 题材 hint 仍引用【相关旧事】和事件记录；加入一次性设置迁移
+- 修复：旧聊天里事件 op 的「待复核」会重新写回 events；加载时清理，采纳入口也拒绝事件 op
+- 修复：事件数据不再被 normalize / sanitize / migrateStableIds 改写，也不再用旧事件里的名字新建角色
+- 测试：抽出 `filterRetiredOps` 与 `migrateRetiredSettings` 并覆盖；补 reveal `changedOps` 与待复核清理用例
+- 文档：风险清单、测试计划、对比文档、情景测试脚本同步事件退役
+- 166 个单元测试
+
 ## 0.14.0
 
 - 移除事件台账：不再抽取、注入、召回事件，也不再提醒「疑似漏记大事」；离散剧情交给酒馆原生上下文与向量召回

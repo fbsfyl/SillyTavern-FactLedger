@@ -1,4 +1,4 @@
-import { getContext } from '../../../extensions.js';
+﻿import { getContext } from '../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../script.js';
 import {
     createEmptyState,
@@ -10,6 +10,8 @@ import {
     buildExtractionPrompt,
     parseExtractionResponse,
     detectLeaks,
+    filterRetiredOps,
+    migrateRetiredSettings,
     selectSettleMessages,
     messageHash,
     detectAnchorMutation,
@@ -38,7 +40,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.14.0';
+const VERSION = '0.14.1';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -113,6 +115,8 @@ function getSettings() {
     if (typeof settings.narrativeRules !== 'string') {
         settings.narrativeRules = getGenrePreset(settings.genrePreset).narrativeRules || '';
     }
+    // 0.14.1 事件退役：只清理旧默认文案，不动用户自己写的规则。
+    if (migrateRetiredSettings(settings)) saveSettingsDebounced();
     return settings;
 }
 
@@ -622,8 +626,7 @@ async function settleLedger(options = {}) {
         const beforeIds = new Set(Object.keys(state.characters || {}));
         const requestedOps = normalizeOpsAliases(parsed.ops);
         // 事件已退役：新结算不再接受事件 op；旧版本日志回放仍由 applyOps 处理。
-        const opsForApply = requestedOps.filter((op) => op?.op !== 'append_event' && op?.op !== 'add_event');
-        const ignoredEvents = requestedOps.length - opsForApply.length;
+        const { ops: opsForApply, ignored: ignoredEvents } = filterRetiredOps(requestedOps);
         const result = applyOps(baseState, opsForApply, {
             confidenceThreshold: settings.confidenceThreshold,
             reviewThreshold: 0.5,
@@ -1813,6 +1816,11 @@ function acceptReview(index) {
     const entry = state.meta?.review?.[index];
     if (!entry) return;
     const { needsReview, ...op } = entry.op || entry;
+    if (op?.op === 'append_event' || op?.op === 'add_event') {
+        dismissReview(index);
+        setStatus('事件已退役，这条待复核已丢弃。');
+        return;
+    }
     const result = applyOps(state, [op], { confidenceThreshold: 0, reviewThreshold: 0 });
     if (!(result.applied || []).length) {
         const reason = (result.rejected || [])[0]?.reason || '这条 op 被拒绝';

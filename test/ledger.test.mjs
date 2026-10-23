@@ -10,6 +10,8 @@ import {
     parseExtractionResponse,
     extractMentionedFacts,
     detectLeaks,
+    filterRetiredOps,
+    migrateRetiredSettings,
     buildExtractionPrompt,
     selectSettleMessages,
     messageHash,
@@ -129,7 +131,7 @@ test('migrateNpcIsolation 清除 NPC 自身信息的隔离标记，主角保留'
     assert.equal(migrateNpcIsolation(state), false);
 });
 
-test('normalizeState 将旧 chapter 迁移为 time 并删除 chapter', () => {
+test('旧事件数据原样保留，不再做字段迁移', () => {
     const state = normalizeState({
         scene: { chapter: 'ch01', place: '客栈', participants: [] },
         events: [{ id: 'e1', chapter: 'ch02', problem: 'x', result: 'y' }],
@@ -137,8 +139,8 @@ test('normalizeState 将旧 chapter 迁移为 time 并删除 chapter', () => {
     });
     assert.equal(state.scene.time, 'ch01');
     assert.equal(state.scene.chapter, undefined);
-    assert.equal(state.events[0].time, 'ch02');
-    assert.equal(state.events[0].chapter, undefined);
+    assert.equal(state.events[0].chapter, 'ch02');
+    assert.equal(state.events[0].time, undefined);
 });
 
 test('set 双时态：旧值关闭，新值成为 current', () => {
@@ -230,6 +232,43 @@ test('reveal 放宽档位，不再写事件', () => {
 
     assert.equal(entityAccess(state.facts.f_orb), 'friend');
     assert.equal(state.events.length, 0);
+    assert.ok((result.changedOps || []).some((op) => op.op === 'reveal'));
+});
+
+test('事件 op 在新结算入口被过滤并计数', () => {
+    const { ops, ignored } = filterRetiredOps([
+        { op: 'set', character: 'user', field: 'realm', value: '练气三层' },
+        { op: 'append_event', event: { problem: 'x', result: 'y' } },
+        { op: 'add_event', event: { problem: 'x', result: 'y' } },
+    ]);
+    assert.equal(ops.length, 1);
+    assert.equal(ignored, 2);
+});
+
+test('0.14.0 设置迁移只清一次，保留用户自定义规则', () => {
+    const settings = {
+        narrativeRules: '【知情】自定义规则。\n\n【旧事】玩家提到旧事时，以【相关旧事】为准，不要改写细节。\n\n【未了结】仍有效。',
+        genreHint: '场景：记录时间、地点；事件按「问题 → 决策 → 结果」记录。',
+    };
+    assert.equal(migrateRetiredSettings(settings), true);
+    assert.doesNotMatch(settings.narrativeRules, /相关旧事/);
+    assert.match(settings.narrativeRules, /自定义规则/);
+    assert.match(settings.narrativeRules, /【未了结】仍有效/);
+    assert.doesNotMatch(settings.genreHint, /事件按/);
+    const snapshot = JSON.stringify(settings);
+    assert.equal(migrateRetiredSettings(settings), false);
+    assert.equal(JSON.stringify(settings), snapshot);
+});
+
+test('旧聊天里的事件待复核会被清掉', () => {
+    const state = createEmptyState();
+    state.meta.review = [
+        { op: { op: 'append_event', event: { problem: 'x', result: 'y' } } },
+        { op: { op: 'set', character: 'user', field: 'realm', value: '练气三层' } },
+    ];
+    normalizeState(state);
+    assert.equal(state.meta.review.length, 1);
+    assert.equal(state.meta.review[0].op.op, 'set');
 });
 
 test('validateOps 拒绝缺证据与低置信度，标记待复核', () => {
@@ -518,14 +557,14 @@ test('append_event 的 stateChanges 写成对象时转成可读文本', () => {
     assert.deepEqual(result.state.events[0].stateChanges, ['field: money；from: 10；to: 5', '与王掌柜关系变差']);
 });
 
-test('加载旧台账时清掉 stateChanges 里的 [object Object]', () => {
+test('旧事件的 stateChanges 不再清洗，保持原样', () => {
     const state = createEmptyState();
     state.events.push({
         id: 'e0001', time: '第一日', place: '客栈', actors: ['user'], problem: '争执', decision: '赔钱', result: '和解',
         stateChanges: ['[object Object]', '境界提升'], knownBy: {}, witnesses: [], keywords: [], sourceMessages: [],
     });
     const result = normalizeState(state);
-    assert.deepEqual(result.events[0].stateChanges, ['境界提升']);
+    assert.deepEqual(result.events[0].stateChanges, ['[object Object]', '境界提升']);
 });
 
 test('assembleInjection 包含主角色与秘密知情', () => {
@@ -1076,8 +1115,8 @@ test('旧事件的知情标注不再注入', () => {
         activeCharacterIds: ['lin_yuan', 'su_wan', 'wang_shi', 'zhao'],
         protagonistId: 'lin_yuan',
     });
+    assert.match(text, /【角色·/);
     assert.doesNotMatch(text, /试探来历/);
-    assert.doesNotMatch(text, /\[K:[^\]]*苏婉/);
 });
 
 test('add_fact 改文本时保留档位，误信单独记录', () => {
@@ -1865,7 +1904,7 @@ test('注入把知情写成正文优先，并给出台账默认', () => {
     assert.match(text, /不要用台账反驳正文/);
     assert.match(text, /默认知情=苏绾/);
     assert.match(text, /默认不知情=王掌柜/);
-    assert.match(text, /旧事离开上下文也按这里/);
+    assert.match(text, /当前事实与知情关系离开上下文也按这里/);
     assert.match(text, /在场、看到、正文没提他不知道，都不等于他知道/);
 });
 
@@ -2595,9 +2634,10 @@ test('稳定 ID：旧名字台账迁移并重写版本日志', () => {
     const wang = findCharacter(state, '王掌柜');
     assert.notEqual(su.id, '苏婉');
     assert.equal(state.facts.f1.beliefs[su.id].state, 'suspects');
-    assert.deepEqual(state.events[0].actors, [su.id]);
-    assert.deepEqual(state.events[0].witnesses, [wang.id]);
-    assert.equal(state.events[0].beliefs[su.id].state, 'suspects');
+    // 事件已退役：迁移不再改写旧事件里的名字，也不为它们新建角色。
+    assert.deepEqual(state.events[0].actors, ['苏婉']);
+    assert.deepEqual(state.events[0].witnesses, ['王掌柜']);
+    assert.equal(state.events[0].beliefs['苏婉'].state, 'suspects');
     assert.equal(state.meta.history[0].ops[0].character, su.id);
     assert.deepEqual(state.meta.history[0].scene.participants, [su.id]);
     assert.equal(migrateStableIds(state), false);

@@ -1,13 +1,13 @@
-# Fact Ledger（事实台账）
+﻿# Fact Ledger（事实台账）
 
 [![release](https://img.shields.io/github/v/release/fbsfyl/SillyTavern-FactLedger?label=release)](https://github.com/fbsfyl/SillyTavern-FactLedger/releases)
 [![license](https://img.shields.io/github/license/fbsfyl/SillyTavern-FactLedger)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-163-brightgreen)](TEST_REPORT.md)
+[![tests](https://img.shields.io/badge/tests-166-brightgreen)](test/ledger.test.mjs)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.19%2B-5b4ee6)](https://github.com/SillyTavern/SillyTavern)
 
 面向 SillyTavern 文字冒险 / 角色扮演的结构化记忆扩展：**当前状态台账 + 双时态历史 + 秘密知情约束**。
 
-- 版本：`0.14.0`
+- 版本：`0.14.1`
 - 类型：SillyTavern 正式扩展（manifest + 前端模块）
 - 依赖：无第三方 npm 依赖
 
@@ -126,7 +126,7 @@ SillyTavern-FactLedger/
 │   ├── ledger.js          # 纯逻辑：双时态/认知/注入/泄露/健康检查
 │   └── genres.js          # 题材预设
 ├── test/
-│   └── ledger.test.mjs    # 163 个单元测试
+│   └── ledger.test.mjs    # 166 个单元测试
 ├── docs/
 │   └── DESIGN.md          # 数据模型 / 提取协议 / 注入装配
 ├── CHANGELOG.md
@@ -190,7 +190,7 @@ git clone https://github.com/fbsfyl/SillyTavern-FactLedger
 | 提取连接配置 | 空 = 跟随当前选中 profile | 建议单独指定稳定、擅长 JSON 的模型 |
 | 提取最大 token | 4096 | 27B 提取约 600–1200；思考型模型建议 8192 |
 | 置信度阈值 | 0.7 | `≥0.7` 自动应用；`0.5–0.7` 进入待复核；`<0.5` 拒绝 |
-| 注入 token 预算 | 3000 | 超出后按「其他角色 → 非主角角色块 → 未了结 → 秘密」裁剪；角色认知最后才删 |
+| 注入 token 预算 | 3000 | 超出后按「其他角色 → 非主角角色块 → 全部角色块 → 未了结 → 场景 → 秘密」裁剪；秘密最后才整段丢 |
 | 注入位置 | 系统提示层 | 与主 system prompt 合并，兼容只接受首条 system 的模型 |
 | 秘密知情约束 | 开 | 是否注入每个在场角色的认知清单；关闭后秘密内容仍注入，只是不再标「谁知情」 |
 | 泄露检测 | 开 | 是否保存并使用提取模型返回的 `leaks` |
