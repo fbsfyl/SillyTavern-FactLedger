@@ -985,6 +985,18 @@ test('buildExtractionPrompt 包含台账、对话与输出规则', () => {
     assert.doesNotMatch(user, /append_event/);
 });
 
+test('提取提示的当前台账带上角色字段与档位', () => {
+    const state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main', access: 'protagonist',
+        state: { realm: { current: '筑基一层', history: [], access: 'protagonist' } },
+        items: [], relations: [], facts: [], skills: [], abilities: [],
+    };
+    const { user } = buildExtractionPrompt(state, []);
+    assert.match(user, /realm/);
+    assert.match(user, /筑基一层/);
+});
+
 test('estimateTokens 对中文返回正数', () => {
     assert.ok(estimateTokens('林远持有混沌珠') >= 6);
 });
