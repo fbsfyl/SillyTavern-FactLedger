@@ -10,7 +10,6 @@ import {
     buildExtractionPrompt,
     parseExtractionResponse,
     detectLeaks,
-    detectMissingMajorEvent,
     selectSettleMessages,
     messageHash,
     detectAnchorMutation,
@@ -39,7 +38,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.13.6';
+const VERSION = '0.14.0';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -66,13 +65,11 @@ const DEFAULT_SETTINGS = {
     knowledgeGate: true,
     leakCheck: true,
     showOthers: true,
-    recallEvents: true,
     secretCooling: true,
 };
 
 const TABS = [
     { id: 'characters', label: '角色' },
-    { id: 'events', label: '事件' },
     { id: 'knowledge', label: '认知' },
     { id: 'history', label: '日志' },
     { id: 'health', label: '健康' },
@@ -289,7 +286,7 @@ function restoreLedgerFromHistory(reason = '') {
     const { index } = findReplayPoint(history, ctx.chat);
     if (index < 0) {
         // 找不到能对上的前缀时保留现有台账，只把结算锚点退回去重算最近一段。
-        // 直接 replayHistory(-1) 会把角色、物品、关系、秘密和事件全部清空。
+        // 直接 replayHistory(-1) 会把角色、物品、关系和秘密全部清空。
         state.meta.lastProcessedMessage = reanchorWindow(ctx.chat.length, 20);
         state.meta.lastProcessedHash = '';
         saveState();
@@ -299,7 +296,7 @@ function restoreLedgerFromHistory(reason = '') {
     const restored = replayHistory(history, index);
     state.characters = restored.characters;
     state.facts = restored.facts;
-    state.events = restored.events;
+    // events 已退役：回放不再覆盖旧数据，保留原样供导出查看。
     state.scene = restored.scene;
     state.meta.history = history.filter((record) => Number(record?.to) <= index);
     // 回放会重新分配 npc_xxx，计数器只许往前，不能让后来的角色复用已有 id。
@@ -332,7 +329,6 @@ function buildInjectionText() {
         tokenBudget: settings.injectBudget,
         knowledgeGate: settings.knowledgeGate,
         showOthers: settings.showOthers,
-        recallEvents: settings.recallEvents,
         secretCooling: settings.secretCooling,
         skillLabel: getGenrePreset(settings.genrePreset).skillLabel,
         recentText,
@@ -613,8 +609,7 @@ async function settleLedger(options = {}) {
         }
 
         const protagonistAliases = [...PROTAGONIST_ALIASES, ctx.name1].filter(Boolean);
-        // 事件要继承当天的日期，所以 model 给的 day 必须在 ops 之前落进 scene；
-        // 否则同一轮 append_event 拿到的是昨天的 day，算不出「多久以前」。
+        // 场景日期先落进 scene：档位冷却和「最近同场」都要用当天的 day。
         const parsedScene = parsed.scene && typeof parsed.scene === 'object' ? parsed.scene : null;
         const parsedDay = (() => {
             const number = Number.parseFloat(String(parsedScene?.day ?? ''));
@@ -625,7 +620,11 @@ async function settleLedger(options = {}) {
             : { ...state, scene: { ...state.scene, day: parsedDay } };
         // 记录本次新建的角色，回放时按原始 id 重建，避免按名字重新分配 id 造成串档。
         const beforeIds = new Set(Object.keys(state.characters || {}));
-        const result = applyOps(baseState, normalizeOpsAliases(parsed.ops), {
+        const requestedOps = normalizeOpsAliases(parsed.ops);
+        // 事件已退役：新结算不再接受事件 op；旧版本日志回放仍由 applyOps 处理。
+        const opsForApply = requestedOps.filter((op) => op?.op !== 'append_event' && op?.op !== 'add_event');
+        const ignoredEvents = requestedOps.length - opsForApply.length;
+        const result = applyOps(baseState, opsForApply, {
             confidenceThreshold: settings.confidenceThreshold,
             reviewThreshold: 0.5,
             messageCount: ctx.chat.length,
@@ -710,13 +709,6 @@ async function settleLedger(options = {}) {
         nextState.meta.messagesSinceSettle = 0;
         nextState.meta.lastSettleAt = new Date().toISOString();
         nextState.meta.lastError = '';
-        // 只扫本轮新消息，且跳过开场白：开场白是背景，不是本轮发生的事。
-        const freshMessages = messages.filter((message) => Number(message.index ?? 0) >= newFrom);
-        const auditMessages = freshMessages.filter((message) => {
-            const index = Number(message.index ?? 0);
-            return index > 0 || message.isUser;
-        });
-        nextState.meta.majorWarning = detectMissingMajorEvent(auditMessages, result.applied);
         nextState.meta.leaks = settings.leakCheck ? parsed.leaks : [];
         // 低置信 op 不落账，但要留一个入口：面板可以补采纳，否则等于静默丢弃。
         const pendingReview = Array.isArray(nextState.meta.review) ? nextState.meta.review : [];
@@ -734,7 +726,7 @@ async function settleLedger(options = {}) {
         renderPanel();
         lastExtractionFailure = { kind: '', at: 0 };
         setStatus(
-            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${result.applied.length} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${parsed.leaks.length} 条。`,
+            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${result.applied.length} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${parsed.leaks.length} 条${ignoredEvents ? `，忽略事件 ${ignoredEvents} 条` : ''}。`,
         );
         // reveal 改变了谁知道，必须让用户当场看到；只提示真正改了档位的 reveal。
         notifyReveals((result.changedOps || []).filter((op) => op && op.op === 'reveal'), nextState);
@@ -885,7 +877,6 @@ function bindSettings() {
     bindCheckbox('factledger_knowledge_gate', 'knowledgeGate');
     bindCheckbox('factledger_leak_check', 'leakCheck');
     bindCheckbox('factledger_show_others', 'showOthers');
-    bindCheckbox('factledger_recall_events', 'recallEvents');
     bindCheckbox('factledger_secret_cooling', 'secretCooling');
     bindCheckbox('factledger_narrative_rules_toggle', 'injectNarrativeRules');
 
@@ -1117,28 +1108,6 @@ function renderCharacters(body) {
         .join('');
 }
 
-function renderEvents(body) {
-    const state = getState();
-    if (!state.events.length) {
-        body.innerHTML = '<div class="factledger-empty">还没有事件记录。</div>';
-        return;
-    }
-    body.innerHTML = state.events
-        .slice()
-        .reverse()
-        .map((event) => `
-            <div class="factledger-card">
-                <div class="factledger-card-head">
-                    <strong>${escapeHtml(event.time || '')} ${escapeHtml(event.id || '')}</strong>
-                    <span class="factledger-badge ${event.importance === 'major' ? 'warn' : ''}">${escapeHtml(event.importance || 'normal')}</span>
-                </div>
-                <div>${escapeHtml(event.problem || '')} → ${escapeHtml(event.decision || '')} → ${escapeHtml(event.result || '')}</div>
-                <div class="factledger-muted">${escapeHtml((event.actors || []).map((id) => (id === PROTAGONIST_ID ? '你' : (state.characters[id]?.name || id))).join('、'))} @ ${escapeHtml(event.place || '')}</div>
-            </div>
-        `)
-        .join('');
-}
-
 function renderHistory(body) {
     const state = getState();
     const history = Array.isArray(state.meta?.history) ? state.meta.history : [];
@@ -1267,25 +1236,6 @@ function renderKnowledge(body) {
         });
     }
 
-    for (const event of state.events) {
-        if (!isGated(event)) continue;
-        const witnesses = Array.isArray(event.witnesses) ? event.witnesses : [];
-        const known = [...new Set([
-            ...witnesses,
-            ...Object.values(state.characters)
-                .filter((character) => knowsEntity(event, character.id, state, 'public'))
-                .map((character) => character.id),
-        ])].map((id) => (id === PROTAGONIST_ID ? '你' : (state.characters[id]?.name || id))).join('，');
-        cards.push({
-            type: '事件',
-            id: event.id,
-            text: `${event.problem || ''} → ${event.result || ''}`,
-            access: entityAccess(event, 'public'),
-            known: known || '无记录',
-            ref: { kind: 'event', eventId: event.id },
-        });
-    }
-
     knowledgeEntries = cards;
 
     if (!cards.length) {
@@ -1334,8 +1284,6 @@ function resolveEntity(ref) {
             return state.characters[ref.charId]?.abilities?.find((ability) => ability.validTo == null && ability.id === ref.traitId);
         case 'characterFact':
             return state.characters[ref.charId]?.facts?.[ref.index];
-        case 'event':
-            return state.events.find((event) => event.id === ref.eventId);
         default:
             return null;
     }
@@ -1352,9 +1300,7 @@ function openKnownByEditor(card) {
     const options = ACCESS_LEVELS
         .map((level) => `<option value="${level}" ${level === current ? 'selected' : ''}>${ACCESS_LABELS[level]}</option>`)
         .join('');
-    const note = card.ref.kind === 'event'
-        ? '事件的档位决定哪些人能提这件事；目击者名单仍单独保留。'
-        : '档位越高，能知道的人越少：主角级只有你自己，公开级人人皆知。';
+    const note = '档位越高，能知道的人越少：主角级只有你自己，公开级人人皆知。';
 
     document.getElementById('factledger_known_modal')?.remove();
     const modal = document.createElement('div');
@@ -1625,10 +1571,6 @@ function renderStatusBar() {
     const leakNotice = leakCount
         ? `<div class="factledger-statusbar-notice">${leakCount} 条泄漏待处理，打开台账确认</div>`
         : '';
-    const majorWarning = String(state.meta?.majorWarning || '').trim();
-    const majorNotice = majorWarning
-        ? `<div class="factledger-statusbar-notice">${escapeHtml(majorWarning)}</div>`
-        : '';
     const lastError = String(state.meta?.lastError || '').trim();
     const errorNotice = lastError
         ? `<div class="factledger-statusbar-notice factledger-statusbar-error">提取失败：${escapeHtml(lastError.slice(0, 180))}</div>`
@@ -1642,7 +1584,6 @@ function renderStatusBar() {
         ${loading}
         ${errorNotice}
         ${leakNotice}
-        ${majorNotice}
         ${panels.map((panel) => {
             const collapsed = collapsedStatusPanels.has(panel.key);
             return `
@@ -1681,7 +1622,6 @@ function renderHealth(body) {
         tokenBudget: settings.injectBudget,
         knowledgeGate: settings.knowledgeGate,
         showOthers: settings.showOthers,
-        recallEvents: settings.recallEvents,
         secretCooling: settings.secretCooling,
         skillLabel: getGenrePreset(settings.genrePreset).skillLabel,
         recentText: '',
@@ -1918,7 +1858,6 @@ function buildDebugData() {
         scene: state.scene,
         characters: Object.values(state.characters || {})
             .map((character) => `${character.id}:${character.name}:${character.tier}`),
-        eventIds: (state.events || []).map((event) => event.id),
         factIds: Object.keys(state.facts || {}),
         leakCount: Array.isArray(state.meta?.leaks) ? state.meta.leaks.length : 0,
         injectionTokens: estimateTokens(injection),
@@ -2060,7 +1999,7 @@ function registerSlashCommands() {
             const restored = replayHistory(history, target.to);
             state.characters = restored.characters;
             state.facts = restored.facts;
-            state.events = restored.events;
+            // events 已退役：回放不再覆盖旧数据。
             state.scene = restored.scene;
             state.meta.history = history.filter((record) => Number(record.to) <= target.to);
             state.meta.lastProcessedMessage = target.to;
@@ -2126,8 +2065,8 @@ function saveEditor() {
     if (!textarea) return;
     try {
         const data = JSON.parse(textarea.value);
-        if (!data || typeof data !== 'object' || typeof data.characters !== 'object' || !Array.isArray(data.events)) {
-            throw new Error('结构不完整：需要 characters 对象与 events 数组');
+        if (!data || typeof data !== 'object' || typeof data.characters !== 'object') {
+            throw new Error('结构不完整：需要 characters 对象');
         }
         const ctx = getContext();
         ctx.chatMetadata[MODULE_NAME] = normalizeState(data);
@@ -2161,9 +2100,6 @@ function renderPanel() {
     switch (activeTab) {
         case 'characters':
             renderCharacters(body);
-            break;
-        case 'events':
-            renderEvents(body);
             break;
         case 'knowledge':
             renderKnowledge(body);
@@ -2205,7 +2141,7 @@ async function importState(event) {
     try {
         const text = await file.text();
         const parsed = JSON.parse(text);
-        if (!parsed || typeof parsed !== 'object' || !parsed.characters || !parsed.events) {
+        if (!parsed || typeof parsed !== 'object' || !parsed.characters) {
             throw new Error('不是有效的台账 JSON');
         }
         const data = normalizeState(parsed);

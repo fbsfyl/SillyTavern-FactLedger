@@ -2,6 +2,8 @@
 
 > 面向维护者。使用与安装请看 [README](../README.md)。
 
+> `events` 字段从 0.14.0 起退役：新版本不再写入、注入或召回事件。旧聊天里的 `events` 会原样保留，供导出与旧版本日志回放使用；下面的示例仅作历史数据参考。
+
 ## 1. 数据模型
 
 ```json
@@ -112,7 +114,7 @@
 `characters` 的键是**不随剧情变化的不透明 ID**，姓名只是显示数据：
 
 - 主角固定 `user`；其他角色用 `npc_001`、`npc_002`……按出现顺序分配。手写的英文键（如 `lin_yuan`）保持原样。
-- `name` 是显示名，`aliases` 存旧名和称呼。旁白、知情名单、关系、事件参与人里写的名字，落库前统一解析成 ID。
+- `name` 是显示名，`aliases` 存旧名和称呼。旁白、知情名单、关系里写的名字，落库前统一解析成 ID。
 - 「执事」后来报出姓名，只改 `name`，不新建档案；问出名字前用的临时名（如「白玉广场执事甲」）留在 `aliases` 里。
 - 无名角色不共用档案：同一职位出现在不同地点，就是不同的 `npc_xxx`，知情也不互通。
 - 认错了要合并：`merge_character {from, to}`；只是改名：`rename_character {from, to}`（主角不可改名）。
@@ -142,7 +144,7 @@
   2. 没人看见或刻意隐藏 → `protagonist`；
   3. 有目击者 → 取目击者中与主角关系最疏远的那一档（有公开级目击者就是 `public`）；
   4. 拿不准 → `protagonist`。
-- 事件用 `witnesses` 写真正看到/听到的人（不写就按 `actors` 算），顶层事实也可以写 `witnesses`。显式 `access` 若把目击者排除在外，代码会放宽到最疏远目击者的档位。
+- 顶层事实用 `witnesses` 写真正看到/听到的人。显式 `access` 若把目击者排除在外，代码会放宽到最疏远目击者的档位。
 - **正文明确优先，正文沉默时按台账**：
   - 正文明确写某人不知道 / 被瞒着 → 当前正文按不知道；台账不改档位（档位级不记个人例外）。
   - 正文明确写某人知道 → 当前正文按知道；只有扩散到某个范围时，才用 `reveal` 放宽档位。
@@ -205,7 +207,6 @@
 - `characters[主角].skills[]` / `abilities[]`（隐藏功法、底牌神通）
 - `characters[主角].facts[]`（主角的个人秘密）
 - `facts{}`（顶层事实）
-- `events[]`（`witnesses` 记真正看到的人，并据此定档；`access` 记可引用范围）
 
 示例：
 
@@ -230,19 +231,19 @@
 
 - 受限字段/物品/关系/个人事实**不进入公开角色块**，只出现在【秘密知情】里；
 - 【秘密知情】每条写 `档位；默认知情=…；默认不知情=…`，主角级写「只有你知道」；
-- 事件行会追加 `[K:...]`，只有够格的人可以引用；
-- 未写 `access` 时：事件和顶层事实按目击者定档（最疏远的目击者；没有目击者才回落 `public` / `protagonist`）；字段/物品/关系/技能按 `public`。
+- 未写 `access` 时：顶层事实按目击者定档（最疏远的目击者；没有目击者才回落 `protagonist`）；字段/物品/关系/技能按 `public`。
 - `reveal` 把条目档位放宽到 `to` 所在档；同档其他人也会知道。
 
-`reveal` 支持六种目标：
+`reveal` 支持这些目标：
 
 ```json
+{ "op": "reveal", "fact": "f_orb", "to": "su_wan", "by": "lin_yuan", "method": "被看见" }
 { "op": "reveal", "character": "lin_yuan", "field": "realm", "to": "su_wan", "by": "lin_yuan", "method": "战斗中暴露" }
+{ "op": "reveal", "character": "lin_yuan", "fact": "你私藏半块玉牌", "to": "su_wan", "by": "lin_yuan", "method": "当面拿出" }
 { "op": "reveal", "item": "i_orb", "to": "su_wan", "by": "lin_yuan", "method": "被看见" }
 { "op": "reveal", "relation": "su_wan", "to": "wang_shop", "by": "lin_yuan", "method": "被迫承认" }
 { "op": "reveal", "skill": "sk_qingmu", "to": "su_wan", "by": "lin_yuan", "method": "当面运功" }
 { "op": "reveal", "ability": "ab_feng", "to": "su_wan", "by": "lin_yuan", "method": "当众施展" }
-{ "op": "reveal", "event": "e0001", "to": "su_wan", "by": "lin_yuan", "method": "事后得知" }
 ```
 
 - `reveal` 在正文明确写某人知道了时使用，把档位放宽到该人所在档；同档其他人也会知道。
@@ -266,7 +267,6 @@
     { "op": "set_skill", "character": "lin_yuan", "skill": "sk_qingmu", "level": "第四重", "validFrom": "第四日 晨", "evidence": "msg:6", "confidence": 0.9 },
     { "op": "move_item", "item": "i_sword", "to": "su_wan", "validFrom": "第四日 晨", "evidence": "msg:90", "confidence": 0.9 },
     { "op": "set_relation", "from": "lin_yuan", "to": "su_wan", "type": "同门", "attitude": "信任", "validFrom": "第五日 夜", "evidence": "msg:120", "confidence": 0.9 },
-    { "op": "append_event", "event": { "time": "第三日 夜", "place": "黑风寨", "problem": "矿脉被劫", "decision": "夜袭", "result": "夺回", "importance": "major", "sourceMessages": [41] } },
     { "op": "add_fact", "fact": { "id": "f_orb", "text": "林远持有混沌珠", "access": "protagonist" }, "evidence": "msg:10", "confidence": 0.9 },
     { "op": "reveal", "fact": "f_orb", "to": "su_wan", "by": "lin_yuan", "method": "战斗中被迫使用", "validFrom": "第三日 夜", "evidence": "msg:92", "confidence": 0.95 },
     { "op": "set_scene", "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["lin_yuan", "su_wan"] } }
@@ -289,7 +289,6 @@
 - 台账用 `meta.lastProcessedMessage` 记录上次结算到哪条消息；
 - 每次只取它之后的新消息，再额外带前 3 条作上下文；
 - 上下文消息在提取提示里标记 `[context]`，模型不得为它们生成 op；
-- 重复事件按「时间｜地点｜参与人｜问题｜决策｜结果」去重；
 - 首次结算最多回看 20 条，避免一次性把整段聊天灌进去。
 
 每次结算还会向 `meta.history` 追加一条记录：
@@ -320,7 +319,7 @@
 1. **规则头**：台账是玩家已知事实；`[K:]` / `access` 只约束 NPC；
 2. **场景**：时间、地点、在场角色；
 3. **角色**：主角 + 在场角色全量按真相渲染；其他角色一行；
-4. **事件台账**：最近 N 条 + 全部 `major`，带 `[K:姓名]`；
+4. **未了结**：人情、承诺、仇怨、悬案，最多 6 条；
 5. **秘密知情**：每条秘密一行，列出「知情 / 不知情 / 怀疑 / 错误认知」。
 
 `【秘密知情】` 示例：
@@ -334,7 +333,7 @@
 超出 token 预算时按以下顺序裁剪：
 
 ```
-其他角色 → 旧事件 → 认知详情 → 非主角角色块
+其他角色 → 非主角角色块 → 未了结 → 秘密
 ```
 
 ---
