@@ -1179,6 +1179,7 @@ test('注入头部声明在场不等于知情', () => {
     const state = createEmptyState();
     const text = assembleInjection(state, { protagonistId: 'user' });
     assert.match(text, /在场、看到、正文没提他不知道，都不等于他知道/);
+    assert.match(text, /反复提到某条秘密，也不等于它已经公开/);
 });
 
 test('suspects 渲染具体怀疑内容', () => {
