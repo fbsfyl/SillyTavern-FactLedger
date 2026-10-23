@@ -1,4 +1,4 @@
-﻿import { getContext } from '../../../extensions.js';
+import { getContext } from '../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../script.js';
 import {
     createEmptyState,
@@ -10,8 +10,6 @@ import {
     buildExtractionPrompt,
     parseExtractionResponse,
     detectLeaks,
-    filterRetiredOps,
-    migrateRetiredSettings,
     selectSettleMessages,
     messageHash,
     detectAnchorMutation,
@@ -19,9 +17,6 @@ import {
     computePrefixHashes,
     findReplayPoint,
     replayHistory,
-    migrateNpcFields,
-    migrateNpcIsolation,
-    migrateStableIds,
     ensureCharacterRecord,
     PROTAGONIST_ID,
     PROTAGONIST_ALIASES,
@@ -115,8 +110,6 @@ function getSettings() {
     if (typeof settings.narrativeRules !== 'string') {
         settings.narrativeRules = getGenrePreset(settings.genrePreset).narrativeRules || '';
     }
-    // 0.14.0 事件退役：只清理旧默认文案，不动用户自己写的规则。
-    if (migrateRetiredSettings(settings)) saveSettingsDebounced();
     return settings;
 }
 
@@ -168,11 +161,7 @@ function getState() {
     }
     ctx.chatMetadata[MODULE_NAME] = normalizeState(ctx.chatMetadata[MODULE_NAME]);
     const state = ctx.chatMetadata[MODULE_NAME];
-    const migratedItems = migrateNpcFields(state);
-    const migratedIsolation = migrateNpcIsolation(state);
-    const migratedIds = migrateStableIds(state);
-    const normalizedAliases = normalizeStateAliases(state);
-    if (migratedItems || migratedIsolation || migratedIds || normalizedAliases) {
+    if (normalizeStateAliases(state)) {
         saveState();
     }
     return state;
@@ -211,7 +200,6 @@ function revealTargetLabel(op, state) {
         }
         return String(wanted);
     }
-    if (op.event) return `事件 ${op.event}`;
     if (op.field) return `${nameOf(op.character)}.${op.field}`;
     return '秘密';
 }
@@ -300,7 +288,6 @@ function restoreLedgerFromHistory(reason = '') {
     const restored = replayHistory(history, index);
     state.characters = restored.characters;
     state.facts = restored.facts;
-    // events 已退役：回放不再覆盖旧数据，保留原样供导出查看。
     state.scene = restored.scene;
     state.meta.history = history.filter((record) => Number(record?.to) <= index);
     // 回放会重新分配 npc_xxx，计数器只许往前，不能让后来的角色复用已有 id。
@@ -625,9 +612,7 @@ async function settleLedger(options = {}) {
         // 记录本次新建的角色，回放时按原始 id 重建，避免按名字重新分配 id 造成串档。
         const beforeIds = new Set(Object.keys(state.characters || {}));
         const requestedOps = normalizeOpsAliases(parsed.ops);
-        // 事件已退役：新结算不再接受事件 op；旧版本日志回放仍由 applyOps 处理。
-        const { ops: opsForApply, ignored: ignoredEvents } = filterRetiredOps(requestedOps);
-        const result = applyOps(baseState, opsForApply, {
+        const result = applyOps(baseState, requestedOps, {
             confidenceThreshold: settings.confidenceThreshold,
             reviewThreshold: 0.5,
             messageCount: ctx.chat.length,
@@ -729,7 +714,7 @@ async function settleLedger(options = {}) {
         renderPanel();
         lastExtractionFailure = { kind: '', at: 0 };
         setStatus(
-            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${result.applied.length} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${parsed.leaks.length} 条${ignoredEvents ? `，忽略事件 ${ignoredEvents} 条` : ''}。`,
+            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${result.applied.length} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${parsed.leaks.length} 条。`,
         );
         // reveal 改变了谁知道，必须让用户当场看到；只提示真正改了档位的 reveal。
         notifyReveals((result.changedOps || []).filter((op) => op && op.op === 'reveal'), nextState);
@@ -1143,7 +1128,7 @@ function isGated(entity) {
 }
 
 /** 一行说明：档位 + 当前够格知道的人。 */
-function knownBySummary(entity, state) {
+function knowledgeSummary(entity, state) {
     const access = entityAccess(entity, 'public');
     if (access === 'public') return '公开';
     const names = Object.values(state?.characters || {})
@@ -1163,7 +1148,7 @@ function renderKnowledge(body) {
             id: fact.id,
             text: fact.text,
             access: entityAccess(fact, 'protagonist'),
-            known: knownBySummary(fact, state),
+            known: knowledgeSummary(fact, state),
             ref: { kind: 'fact', id: fact.id },
         });
     }
@@ -1179,7 +1164,7 @@ function renderKnowledge(body) {
                 id: `${name}.${field}`,
                 text: `${field}：${entry.current ?? entry}`,
                 access: entityAccess(entry, 'public'),
-                known: knownBySummary(entry, state),
+                known: knowledgeSummary(entry, state),
                 ref: { kind: 'field', charId: character.id, field },
             });
         }
@@ -1192,7 +1177,7 @@ function renderKnowledge(body) {
                 id: item.id,
                 text: `${name} 持有 ${item.name}${quantityText}`,
                 access: entityAccess(item, 'public'),
-                known: knownBySummary(item, state),
+                known: knowledgeSummary(item, state),
                 ref: { kind: 'item', charId: character.id, itemId: item.id },
             });
         }
@@ -1202,7 +1187,7 @@ function renderKnowledge(body) {
                 id: `${name} → ${relation.targetName || relation.target}`,
                 text: [relation.type, relation.attitude].filter(Boolean).join('/'),
                 access: entityAccess(relation, 'public'),
-                known: knownBySummary(relation, state),
+                known: knowledgeSummary(relation, state),
                 ref: { kind: 'relation', charId: character.id, target: relation.target || relation.targetName },
             });
         }
@@ -1212,7 +1197,7 @@ function renderKnowledge(body) {
                 id: skill.name,
                 text: `${name} 修炼 ${skill.name}${skill.level ? `（${skill.level}）` : ''}`,
                 access: entityAccess(skill, 'public'),
-                known: knownBySummary(skill, state),
+                known: knowledgeSummary(skill, state),
                 ref: { kind: 'skill', charId: character.id, traitId: skill.id },
             });
         }
@@ -1222,7 +1207,7 @@ function renderKnowledge(body) {
                 id: ability.name,
                 text: `${name} 修习 ${ability.name}${ability.level ? `（${ability.level}）` : ''}`,
                 access: entityAccess(ability, 'public'),
-                known: knownBySummary(ability, state),
+                known: knowledgeSummary(ability, state),
                 ref: { kind: 'ability', charId: character.id, traitId: ability.id },
             });
         }
@@ -1233,7 +1218,7 @@ function renderKnowledge(body) {
                 id: name,
                 text: fact.text || fact,
                 access: entityAccess(fact, 'public'),
-                known: knownBySummary(fact, state),
+                known: knowledgeSummary(fact, state),
                 ref: { kind: 'characterFact', charId: character.id, index },
             });
         });
@@ -1335,9 +1320,6 @@ function openKnownByEditor(card) {
     modal.querySelector('#factledger_known_save')?.addEventListener('click', () => {
         const selected = document.getElementById('factledger_known_access')?.value || current;
         entity.access = normalizeAccess(selected, current);
-        // 旧字段不再参与判定，顺手清掉，避免两份规则并存。
-        delete entity.visibility;
-        delete entity.knownBy;
         saveState();
         refreshInjection();
         close();
@@ -1817,11 +1799,6 @@ function acceptReview(index) {
     if (!entry) return;
     const rawOp = entry?.op && typeof entry.op === 'object' ? entry.op : entry;
     const { needsReview, ...op } = rawOp;
-    if (filterRetiredOps([op]).ignored) {
-        dismissReview(index);
-        setStatus('事件已退役，这条待复核已丢弃。');
-        return;
-    }
     const result = applyOps(state, [op], { confidenceThreshold: 0, reviewThreshold: 0 });
     if (!(result.applied || []).length) {
         const reason = (result.rejected || [])[0]?.reason || '这条 op 被拒绝';
@@ -2008,7 +1985,6 @@ function registerSlashCommands() {
             const restored = replayHistory(history, target.to);
             state.characters = restored.characters;
             state.facts = restored.facts;
-            // events 已退役：回放不再覆盖旧数据。
             state.scene = restored.scene;
             state.meta.history = history.filter((record) => Number(record.to) <= target.to);
             state.meta.lastProcessedMessage = target.to;

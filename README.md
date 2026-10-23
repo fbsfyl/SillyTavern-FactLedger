@@ -2,12 +2,12 @@
 
 [![release](https://img.shields.io/github/v/release/fbsfyl/SillyTavern-FactLedger?label=release)](https://github.com/fbsfyl/SillyTavern-FactLedger/releases)
 [![license](https://img.shields.io/github/license/fbsfyl/SillyTavern-FactLedger)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-171-brightgreen)](test/ledger.test.mjs)
+[![tests](https://img.shields.io/badge/tests-129-brightgreen)](test/ledger.test.mjs)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.19%2B-5b4ee6)](https://github.com/SillyTavern/SillyTavern)
 
 面向 SillyTavern 文字冒险 / 角色扮演的结构化记忆扩展：**当前状态台账 + 双时态历史 + 秘密知情约束**。
 
-- 版本：`0.14.3`
+- 版本：`0.15.0`
 - 类型：SillyTavern 正式扩展（manifest + 前端模块）
 - 依赖：无第三方 npm 依赖
 
@@ -126,7 +126,7 @@ SillyTavern-FactLedger/
 │   ├── ledger.js          # 纯逻辑：双时态/认知/注入/泄露/健康检查
 │   └── genres.js          # 题材预设
 ├── test/
-│   └── ledger.test.mjs    # 171 个单元测试
+│   └── ledger.test.mjs    # 129 个单元测试
 ├── docs/
 │   └── DESIGN.md          # 数据模型 / 提取协议 / 注入装配
 ├── CHANGELOG.md
@@ -413,10 +413,10 @@ node --test test/ledger.test.mjs
 - 双时态（旧值关闭、新值成为 current）
 - 物品添加/转手
 - 关系历史
-- `reveal` 更新认知（不再写事件）
+- `reveal` 更新认知
 - 缺证据/低置信度/待复核
 - 证据超出消息范围
-- 注入装配（角色/角色认知；旧事件不再注入）
+- 注入装配（角色/角色认知）
 - NPC 自身信息不做隔离
 - 主角秘密的知情者渲染与 `false_belief`
 - 泄露正向检出

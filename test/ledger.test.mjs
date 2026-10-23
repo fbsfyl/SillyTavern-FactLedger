@@ -10,8 +10,6 @@ import {
     parseExtractionResponse,
     extractMentionedFacts,
     detectLeaks,
-    filterRetiredOps,
-    migrateRetiredSettings,
     buildExtractionPrompt,
     selectSettleMessages,
     messageHash,
@@ -21,9 +19,6 @@ import {
     findReplayPoint,
     replayHistory,
     healthCheck,
-    migrateNpcFields,
-    migrateNpcIsolation,
-    migrateStableIds,
     entityAccess,
     characterAccess,
     knowsEntity,
@@ -51,96 +46,11 @@ function tierState() {
     return state;
 }
 
-function eventOp(extra = {}) {
-    return {
-        op: 'append_event',
-        time: '第一日',
-        place: '客栈',
-        problem: '出了事',
-        decision: '去处理',
-        result: '处理完',
-        stateChanges: ['有变化'],
-        sourceMessages: [0],
-        evidence: 'msg:0',
-        confidence: 0.9,
-        ...extra,
-    };
-}
-
 test('createEmptyState 结构完整', () => {
     const state = createEmptyState();
     assert.equal(state.version, 1);
     assert.deepEqual(state.characters, {});
-    assert.deepEqual(state.events, []);
     assert.equal(state.scene.time, '');
-});
-
-test('migrateNpcFields 将 NPC 物品转为事实并清空 items/relations', () => {
-    const state = createEmptyState();
-    state.meta.schemaVersion = 3;
-    state.characters.npc = {
-        id: 'npc',
-        name: '苏婉',
-        tier: 'major',
-        state: {},
-        items: [{ id: 'i_dagger', name: '毒匕首', kind: 'equipment', quantity: 1, validTo: null }],
-        relations: [{ target: 'lin_yuan' }],
-        facts: [],
-    };
-
-    const changed = migrateNpcFields(state);
-    assert.equal(changed, true);
-    assert.equal(state.characters.npc.items.length, 0);
-    assert.equal(state.characters.npc.relations.length, 0);
-    assert.match(state.characters.npc.facts[0].text, /毒匕首/);
-    assert.equal(state.meta.schemaVersion, 4);
-});
-
-test('migrateNpcIsolation 清除 NPC 自身信息的隔离标记，主角保留', () => {
-    const state = createEmptyState();
-    state.meta.schemaVersion = 4;
-    state.characters = {
-        lin_yuan: {
-            id: 'lin_yuan', name: '林远', tier: 'main',
-            state: { realm: { current: '筑基一层', visibility: 'secret', knownBy: { lin_yuan: { state: 'knows' } }, history: [] } },
-            items: [], relations: [], facts: [],
-        },
-        wang: {
-            id: 'wang', name: '王掌柜', tier: 'major',
-            state: {
-                realm: { current: '筑基九层', visibility: 'secret', knownBy: { su_wan: { state: 'knows' } }, history: [] },
-            },
-            items: [{ id: 'i1', name: '算盘', visibility: 'secret', knownBy: { wang: { state: 'knows' } }, validTo: null }],
-            relations: [{ target: 'lin_yuan', visibility: 'secret', knownBy: {}, validTo: null }],
-            facts: [{ text: '隐藏修为', visibility: 'secret', knownBy: {} }],
-        },
-    };
-
-    assert.equal(migrateNpcIsolation(state), true);
-    assert.equal(state.meta.schemaVersion, 5);
-    assert.equal(state.characters.wang.state.realm.current, '筑基九层');
-    assert.equal(state.characters.wang.state.realm.visibility, undefined);
-    assert.equal(state.characters.wang.state.realm.knownBy, undefined);
-    assert.equal(state.characters.wang.items[0].knownBy, undefined);
-    assert.equal(state.characters.wang.relations[0].visibility, undefined);
-    assert.equal(state.characters.wang.facts[0].visibility, undefined);
-    // NPC 自身信息一律公开，不再带档位。
-    assert.equal(entityAccess(state.characters.wang.state.realm), 'public');
-    assert.equal(entityAccess(state.characters.wang.items[0]), 'public');
-    assert.equal(entityAccess(state.characters.lin_yuan.state.realm), 'protagonist');
-    assert.equal(migrateNpcIsolation(state), false);
-});
-
-test('旧事件数据原样保留，不再做字段迁移', () => {
-    const state = normalizeState({
-        scene: { chapter: 'ch01', place: '客栈', participants: [] },
-        events: [{ id: 'e1', chapter: 'ch02', problem: 'x', result: 'y' }],
-        characters: {},
-    });
-    assert.equal(state.scene.time, 'ch01');
-    assert.equal(state.scene.chapter, undefined);
-    assert.equal(state.events[0].chapter, 'ch02');
-    assert.equal(state.events[0].time, undefined);
 });
 
 test('set 双时态：旧值关闭，新值成为 current', () => {
@@ -205,17 +115,7 @@ test('set_relation 关系更新保留历史', () => {
     assert.equal(relations[1].validTo, null);
 });
 
-test('append_event 自动生成 id 并可追加', () => {
-    const state = createEmptyState();
-    const result = run(state, [
-        { op: 'append_event', event: { time: 'ch05', place: '黑风寨', actors: ['lin_yuan'], problem: '矿脉被劫', decision: '夜袭', result: '夺回', importance: 'major', sourceMessages: [41, 42] } },
-    ]);
-    assert.equal(result.state.events.length, 1);
-    assert.match(result.state.events[0].id, /^e\d{4}$/);
-    assert.equal(result.state.events[0].importance, 'major');
-});
-
-test('reveal 放宽档位，不再写事件', () => {
+test('reveal 放宽档位', () => {
     let state = createEmptyState();
     state.characters.su_wan = {
         id: 'su_wan', name: '苏婉', tier: 'npc', access: 'friend',
@@ -231,123 +131,7 @@ test('reveal 放宽档位，不再写事件', () => {
     state = result.state;
 
     assert.equal(entityAccess(state.facts.f_orb), 'friend');
-    assert.equal(state.events.length, 0);
     assert.ok((result.changedOps || []).some((op) => op.op === 'reveal'));
-});
-
-test('事件 op 在新结算入口被过滤并计数', () => {
-    const { ops, ignored } = filterRetiredOps([
-        { op: 'set', character: 'user', field: 'realm', value: '练气三层' },
-        { op: 'append_event', event: { problem: 'x', result: 'y' } },
-        { op: 'add_event', event: { problem: 'x', result: 'y' } },
-        { op: 'reveal', event: 'e0001', to: 'su' },
-    ]);
-    assert.equal(ops.length, 1);
-    assert.equal(ignored, 3);
-});
-
-test('0.14.0 设置迁移只清一次，保留用户自定义规则', () => {
-    const settings = {
-        narrativeRules: '【知情】自定义规则。\n\n【旧事】玩家提到旧事时，以【相关旧事】为准，不要改写细节。\n\n【未了结】仍有效。',
-        genreHint: '场景：记录时间、地点；事件按「问题 → 决策 → 结果」记录。',
-    };
-    assert.equal(migrateRetiredSettings(settings), true);
-    assert.doesNotMatch(settings.narrativeRules, /相关旧事/);
-    assert.match(settings.narrativeRules, /自定义规则/);
-    assert.match(settings.narrativeRules, /【未了结】仍有效/);
-    assert.doesNotMatch(settings.genreHint, /事件按/);
-    const snapshot = JSON.stringify(settings);
-    assert.equal(migrateRetiredSettings(settings), false);
-    assert.equal(JSON.stringify(settings), snapshot);
-});
-
-test('旧默认规则的其余「旧事」措辞也会一起迁移', () => {
-    const settings = {
-        narrativeRules: '正文没写时按台账：旧事离开上下文也按这里；要避免两种错法：① 旧事超出上下文。',
-    };
-    migrateRetiredSettings(settings);
-    assert.doesNotMatch(settings.narrativeRules, /旧事/);
-    assert.match(settings.narrativeRules, /当前事实与知情关系离开上下文/);
-    assert.match(settings.narrativeRules, /旧秘密超出上下文/);
-});
-
-test('0.13.x 的修仙默认规则迁移后等于当前预设，题材切换能识别为默认', () => {
-    const legacy = '【台账】注入的【事实台账】是玩家已知事实的摘要，玩家始终知道真相；它优先于你的推测，只用于确认已知事实，不能据此改写玩家的姓名、身世、灵根、体质与已经写出的经历。\n\n'
-        + '【知情】先看正文：正文明确写谁不知道/被瞒着，就按不知道；明确写谁知道，就按知道；不要用台账反驳正文。正文没写时按台账：旧事离开上下文也按这里，档位够格的默认知情，不够格的默认不知情。要避免两种错法：① 旧事超出上下文，把明明知情的 NPC 写成不知道；② 在场上看到了，但正文没写某个不知情 NPC 不知道，就顺口让他知道。在场不等于知情，沉默也不等于知情。关系升级后，该档旧秘密默认知情；【秘密知情】里：怀疑= 可以试探、旁敲，但不能说破；误以为= 按错误认知行动，不要替其纠正。\n\n'
-        + '【旧事】玩家提到旧事时，以【相关旧事】为准，不要改写细节。【未了结】里的旧账、人情、仇怨仍然有效，相关角色在场时可以推进，不要当成已经了结。';
-    const settings = { narrativeRules: legacy };
-    migrateRetiredSettings(settings);
-    assert.equal(settings.narrativeRules, getGenrePreset('xianxia').narrativeRules);
-});
-
-test('旧日志里的事件 op 不再解析姓名或新建角色', () => {
-    const state = createEmptyState();
-    state.meta.identityVersion = 0;
-    state.characters = {
-        甲: {
-            id: '甲', name: '甲', tier: 'major', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
-        },
-    };
-    state.meta.history = [{
-        to: 0,
-        ops: [{
-            op: 'append_event',
-            event: { actors: ['苏婉'], witnesses: ['王掌柜'], problem: 'x', result: 'y' },
-        }],
-    }];
-    migrateStableIds(state);
-    const names = Object.values(state.characters).map((character) => character.name).sort();
-    assert.equal(names.length, 1);
-    assert.ok(!names.includes('苏婉'));
-    assert.ok(!names.includes('王掌柜'));
-    assert.equal(state.meta.history[0].ops.length, 0);
-});
-
-test('回放会跳过事件 op，不造角色也不重建事件', () => {
-    const history = [{
-        to: 0,
-        ops: [{
-            op: 'append_event',
-            event: { actors: ['路人甲'], witnesses: ['路人乙'], problem: 'x', result: 'y', sourceMessages: [0] },
-        }],
-    }];
-    const replayed = replayHistory(history, 0);
-    assert.equal(Object.keys(replayed.characters).length, 0);
-    assert.equal(replayed.events.length, 0);
-});
-
-test('旧聊天里的事件待复核会被清掉', () => {
-    const state = createEmptyState();
-    state.meta.review = [
-        { op: { op: 'append_event', event: { problem: 'x', result: 'y' } } },
-        { op: { op: 'reveal', event: 'e0001', to: 'su', evidence: 'msg:1' } },
-        { op: { op: 'set', character: 'user', field: 'realm', value: '练气三层' } },
-    ];
-    normalizeState(state);
-    assert.equal(state.meta.review.length, 1);
-    assert.equal(state.meta.review[0].op.op, 'set');
-});
-
-test('旧日志里的扁平事件 op 也会被丢掉，不按 actors 新建角色', () => {
-    const state = createEmptyState();
-    state.meta.identityVersion = 0;
-    state.characters = {
-        甲: {
-            id: '甲', name: '甲', tier: 'major', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
-        },
-    };
-    state.meta.history = [{
-        to: 0,
-        ops: [
-            { op: 'append_event', actors: ['苏婉'], witnesses: ['王掌柜'], problem: 'x', result: 'y' },
-            { op: 'reveal', event: 'e0001', to: '苏婉', evidence: 'msg:0' },
-            { op: 'set', character: '甲', field: 'realm', value: '练气三层', evidence: 'msg:0' },
-        ],
-    }];
-    migrateStableIds(state);
-    const names = Object.values(state.characters).map((character) => character.name).sort();
-    assert.deepEqual(names, ['甲']);
-    assert.deepEqual(state.meta.history[0].ops.map((op) => op.op), ['set']);
 });
 
 test('validateOps 拒绝缺证据与低置信度，标记待复核', () => {
@@ -374,37 +158,6 @@ test('validateOps 拒绝超出消息范围的 evidence', () => {
     assert.match(result.rejected[0].reason, /超出消息范围/);
 });
 
-test('档位字段支持新写法，旧 visibility 折算成档位', () => {
-    const state = createEmptyState();
-    state.characters.lin_yuan = {
-        id: 'lin_yuan', name: '林远', tier: 'main', access: 'protagonist',
-        state: {}, items: [], relations: [], facts: [],
-    };
-    const result = run(state, [
-        {
-            op: 'add_item',
-            character: 'lin_yuan',
-            item: { id: 'i_orb', name: '混沌珠', access: 'intimate' },
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-    ]);
-    assert.equal(entityAccess(result.state.characters.lin_yuan.items[0]), 'intimate');
-
-    const secret = normalizeState({
-        characters: {},
-        events: [],
-        facts: { f1: { id: 'f1', text: '秘密', visibility: 'secret' } },
-    });
-    assert.equal(entityAccess(secret.facts.f1), 'protagonist');
-    const open = normalizeState({
-        characters: {},
-        events: [],
-        facts: { f2: { id: 'f2', text: '公开', visibility: 'public' } },
-    });
-    assert.equal(entityAccess(open.facts.f2), 'public');
-});
-
 test('预算收紧时优先保留秘密认知', () => {
     const state = createEmptyState();
     state.characters.lin_yuan = {
@@ -418,22 +171,10 @@ test('预算收紧时优先保留秘密认知', () => {
     state.facts.f_orb = {
         id: 'f_orb',
         text: '林远持有混沌珠',
-        visibility: 'secret',
-        knownBy: { lin_yuan: { state: 'knows' }, su_wan: { state: 'unaware' } },
+        access: 'protagonist',
         history: [],
     };
     state.scene = { time: '第三日 夜', place: '客栈', participants: ['lin_yuan', 'su_wan'] };
-    for (let i = 0; i < 30; i += 1) {
-        state.events.push({
-            id: `e${String(i).padStart(4, '0')}`,
-            problem: `旧事件${i}的问题描述很长很长`,
-            result: `旧事件${i}的结果描述很长很长`,
-            importance: 'normal',
-            visibility: 'public',
-            witnesses: [],
-            sourceMessages: [i],
-        });
-    }
 
     const text = assembleInjection(state, { tokenBudget: 500, protagonistId: 'lin_yuan' });
     assert.match(text, /混沌珠/);
@@ -448,16 +189,6 @@ test('set_scene 支持顶层 time/place/participants', () => {
     assert.equal(result.state.scene.time, '第三日 夜');
     assert.equal(result.state.scene.place, '客栈');
     assert.deepEqual(result.state.scene.participants, ['lin_yuan']);
-});
-
-test('add_event 与 set_scene field/value 兼容写法', () => {
-    const result = run(createEmptyState(), [
-        { op: 'set_scene', field: 'place', value: '客栈', evidence: 'msg:0', confidence: 0.9 },
-        { op: 'add_event', event: { problem: '旧事', result: '结束', stateChanges: ['旧事结束'], sourceMessages: [0] } },
-    ]);
-    assert.equal(result.state.scene.place, '客栈');
-    assert.equal(result.state.events.length, 1);
-    assert.equal(result.state.events[0].problem, '旧事');
 });
 
 test('validateOps 容错 evidence 写法 msg:#0 与 msg:2,3', () => {
@@ -609,43 +340,6 @@ test('buildExtractionPrompt 标记上下文消息与提取范围', () => {
     assert.match(user, /只提取 #7 及之后/);
 });
 
-test('append_event 相同事件不重复追加', () => {
-    const state = createEmptyState();
-    const op = {
-        op: 'append_event',
-        event: {
-            time: '第三日 夜', place: '客栈', actors: ['lin_yuan'],
-            problem: '矿脉被劫', decision: '夜袭', result: '夺回', stateChanges: ['矿脉夺回'], sourceMessages: [3],
-        },
-    };
-    const result = run(state, [op, op]);
-    assert.equal(result.state.events.length, 1);
-});
-
-test('append_event 的 stateChanges 写成对象时转成可读文本', () => {
-    const state = createEmptyState();
-    const result = run(state, [
-        {
-            op: 'append_event',
-            event: {
-                time: '第三日', place: '客栈', actors: ['lin_yuan'], problem: '争执', decision: '赔钱', result: '和解',
-                stateChanges: [{ field: 'money', from: 10, to: 5 }, '与王掌柜关系变差'], sourceMessages: [3],
-            },
-        },
-    ]);
-    assert.deepEqual(result.state.events[0].stateChanges, ['field: money；from: 10；to: 5', '与王掌柜关系变差']);
-});
-
-test('旧事件的 stateChanges 不再清洗，保持原样', () => {
-    const state = createEmptyState();
-    state.events.push({
-        id: 'e0001', time: '第一日', place: '客栈', actors: ['user'], problem: '争执', decision: '赔钱', result: '和解',
-        stateChanges: ['[object Object]', '境界提升'], knownBy: {}, witnesses: [], keywords: [], sourceMessages: [],
-    });
-    const result = normalizeState(state);
-    assert.deepEqual(result.events[0].stateChanges, ['[object Object]', '境界提升']);
-});
-
 test('assembleInjection 包含主角色与秘密知情', () => {
     let state = createEmptyState();
     state.scene = { time: '夜', place: '黑风寨', participants: ['lin_yuan', 'su_wan'] };
@@ -653,12 +347,12 @@ test('assembleInjection 包含主角色与秘密知情', () => {
     let result = run(state, [
         { op: 'set', character: 'lin_yuan', name: '林远', field: 'realm', value: '炼气七层', validFrom: 'ch12', evidence: 'msg:87', confidence: 0.9 },
         { op: 'add_item', character: 'lin_yuan', name: '林远', item: { id: 'i_sword', name: '青锋剑' }, validFrom: 'ch03', evidence: 'msg:2', confidence: 0.9 },
-        { op: 'add_fact', fact: { id: 'f_orb', text: '林远持有混沌珠', visibility: 'secret' }, evidence: 'msg:10', confidence: 0.95 },
+        { op: 'add_fact', fact: { id: 'f_orb', text: '林远持有混沌珠', access: 'protagonist' }, evidence: 'msg:10', confidence: 0.95 },
     ]);
     state = result.state;
     state.characters.su_wan = { id: 'su_wan', name: '苏婉', tier: 'minor', state: {}, items: [], relations: [], facts: [] };
 
-    const text = assembleInjection(state, { tokenBudget: 3000, knowledgeGate: true, recentText: '苏婉看着林远' });
+    const text = assembleInjection(state, { tokenBudget: 3000, knowledgeGate: true, recentText: '苏婉看着林远', protagonistId: 'lin_yuan' });
     assert.match(text, /林远/);
     assert.match(text, /炼气七层/);
     assert.match(text, /青锋剑/);
@@ -675,8 +369,8 @@ test('parseExtractionResponse 支持代码围栏', () => {
 test('extractMentionedFacts 只返回被提到的秘密事实', () => {
     const state = createEmptyState();
     state.facts = {
-        f_orb: { id: 'f_orb', text: '林远持有混沌珠', visibility: 'secret', knownBy: {} },
-        f_public: { id: 'f_public', text: '宗门大比三日后举行', visibility: 'public', knownBy: {} },
+        f_orb: { id: 'f_orb', text: '林远持有混沌珠', access: 'protagonist' },
+        f_public: { id: 'f_public', text: '宗门大比三日后举行', access: 'public' },
     };
     const result = extractMentionedFacts(state, '苏婉忽然看向林远手里的混沌珠。');
     assert.equal(result.length, 1);
@@ -693,10 +387,10 @@ test('detectLeaks 标记档位不够却被提到的秘密', () => {
         },
     };
     state.characters = {
-        lin_yuan: { id: 'lin_yuan', name: '林远', tier: 'main' },
+        user: { id: 'user', name: '你', tier: 'main', access: 'protagonist' },
         su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public' },
     };
-    const leaks = detectLeaks(state, '苏婉看着混沌珠说：你藏着什么？', ['lin_yuan', 'su_wan']);
+    const leaks = detectLeaks(state, '苏婉看着混沌珠说：你藏着什么？', ['user', 'su_wan']);
     assert.equal(leaks.length, 1);
     assert.equal(leaks[0].character, 'su_wan');
     assert.equal(leaks[0].factText, '林远持有混沌珠');
@@ -731,7 +425,7 @@ test('主角秘密字段不进公开块，只进秘密知情', () => {
     state.characters.lin_yuan.tier = 'main';
     state.characters.su_wan = { id: 'su_wan', name: '苏婉', tier: 'major', state: {}, items: [], relations: [], facts: [] };
 
-    const text = assembleInjection(state, { tokenBudget: 3000, activeCharacterIds: ['lin_yuan', 'su_wan'] });
+    const text = assembleInjection(state, { tokenBudget: 3000, activeCharacterIds: ['lin_yuan', 'su_wan'], protagonistId: 'lin_yuan' });
     const blockStart = text.indexOf('【角色·林远】');
     const blockEnd = text.indexOf('【秘密知情】');
     const publicBlock = text.slice(blockStart, blockEnd);
@@ -771,36 +465,7 @@ test('物品与关系支持档位', () => {
     assert.equal(entityAccess(state.characters.lin_yuan.relations[0]), 'intimate');
 });
 
-test('事件数据保留，但不再进入注入', () => {
-    let state = createEmptyState();
-    state.scene = { time: 'ch05', participants: ['lin_yuan'] };
-    state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', access: 'protagonist', state: {}, items: [], relations: [], facts: [] };
-    state.characters.su_wan = { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], facts: [] };
-    let result = run(state, [
-        {
-            op: 'append_event',
-            event: {
-                id: 'e0001',
-                chapter: 'ch05',
-                actors: ['lin_yuan'],
-                witnesses: ['lin_yuan'],
-                problem: '秘密行动',
-                decision: '潜入',
-                result: '成功',
-                importance: 'major',
-                access: 'friend',
-                sourceMessages: [1],
-            },
-        },
-    ]);
-    state = result.state;
-    assert.equal(state.events.length, 1);
-
-    const text = assembleInjection(state, { tokenBudget: 3000, activeCharacterIds: ['lin_yuan', 'su_wan'] });
-    assert.doesNotMatch(text, /秘密行动|事件台账|相关旧事|事件 e0001/);
-});
-
-test('reveal 支持字段/物品/关系/事件', () => {
+test('reveal 支持字段/物品/关系', () => {
     let state = createEmptyState();
     state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', access: 'protagonist', state: {}, items: [], relations: [], facts: [] };
     state.characters.su_wan = { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], facts: [] };
@@ -836,20 +501,7 @@ test('reveal 支持字段/物品/关系/事件', () => {
             evidence: 'msg:3',
             confidence: 0.9,
         },
-        {
-            op: 'append_event',
-            event: {
-                id: 'e0001',
-                actors: ['lin_yuan'],
-                witnesses: ['lin_yuan'],
-                problem: '秘密行动',
-                decision: '潜入',
-                result: '成功',
-                importance: 'major',
-                access: 'protagonist',
-                sourceMessages: [1],
-            },
-        },
+        { op: 'set_relation', from: 'lin_yuan', to: 'su_wan', toName: '苏婉', type: '秘密同盟', access: 'protagonist', validFrom: 'ch05', evidence: 'msg:3', confidence: 0.9 },
     ]);
     state = result.state;
 
@@ -858,7 +510,6 @@ test('reveal 支持字段/物品/关系/事件', () => {
         { op: 'reveal', to: 'su_wan', by: 'lin_yuan', method: '战斗中暴露', character: 'lin_yuan', field: 'realm', validFrom: 'ch13', evidence: 'msg:4', confidence: 0.95 },
         { op: 'reveal', to: 'su_wan', by: 'lin_yuan', method: '被看见', item: 'i_orb', validFrom: 'ch13', evidence: 'msg:5', confidence: 0.95 },
         { op: 'reveal', to: 'su_wan', by: 'lin_yuan', method: '被迫承认', relation: 'su_wan', validFrom: 'ch13', evidence: 'msg:6', confidence: 0.95 },
-        { op: 'reveal', to: 'su_wan', by: 'lin_yuan', method: '得知', event: 'e0001', validFrom: 'ch13', evidence: 'msg:7', confidence: 0.95 },
     ]);
     state = result.state;
 
@@ -866,7 +517,6 @@ test('reveal 支持字段/物品/关系/事件', () => {
         state.characters.lin_yuan.state.realm,
         state.characters.lin_yuan.items[0],
         state.characters.lin_yuan.relations[0],
-        state.events.find((event) => event.id === 'e0001'),
     ];
     for (const target of targets) {
         assert.equal(entityAccess(target), 'friend');
@@ -924,7 +574,6 @@ test('adjust_item 可为指定角色创建货币物品', () => {
 test('normalizeState 为旧物品补默认数量', () => {
     const state = normalizeState({
         characters: { a: { items: [{ id: 'i1', name: '旧物', validTo: null }] } },
-        events: [],
     });
     assert.equal(state.characters.a.items[0].quantity, 1);
     assert.equal(state.characters.a.items[0].unit, '');
@@ -940,7 +589,7 @@ test('assembleInjection 渲染物品数量', () => {
     state = result.state;
     state.characters.lin_yuan.tier = 'main';
     state.scene = { time: 'ch01', place: '', participants: ['lin_yuan'] };
-    const text = assembleInjection(state, { tokenBudget: 3000, activeCharacterIds: ['lin_yuan'] });
+    const text = assembleInjection(state, { tokenBudget: 3000, activeCharacterIds: ['lin_yuan'], protagonistId: 'lin_yuan' });
     assert.match(text, /灵石×120枚/);
     assert.match(text, /回气丹×3颗/);
 });
@@ -1163,41 +812,6 @@ test('秘密功法可以用 set_skill 改档，并用 reveal 放宽', () => {
     assert.equal(knowsEntity(skill, 'su_wan', state), true);
 });
 
-test('旧事件的知情标注不再注入', () => {
-    const state = createEmptyState();
-    state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
-    state.characters.su_wan = { id: 'su_wan', name: '苏婉', tier: 'npc', access: 'friend', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
-    state.characters.wang_shi = { id: 'wang_shi', name: '王掌柜', tier: 'npc', access: 'public', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
-    state.characters.zhao = { id: 'zhao', name: '赵长老', tier: 'npc', access: 'public', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
-    state.scene = { time: '夜', place: '客栈', participants: ['lin_yuan', 'su_wan'] };
-    const result = run(state, [{
-        op: 'append_event',
-        event: {
-            time: '夜',
-            place: '客栈',
-            actors: ['lin_yuan', 'su_wan'],
-            problem: '试探来历',
-            decision: '出手',
-            result: '惊动旁人',
-            stateChanges: ['realm'],
-            witnesses: ['su_wan'],
-            access: 'friend',
-            beliefs: { wang_shi: { state: 'suspects', suspicion: '有隐情' } },
-            sourceMessages: [5],
-        },
-        validFrom: '夜',
-        evidence: 'msg:5',
-        confidence: 0.9,
-    }]);
-    const text = assembleInjection(result.state, {
-        tokenBudget: 4000,
-        activeCharacterIds: ['lin_yuan', 'su_wan', 'wang_shi', 'zhao'],
-        protagonistId: 'lin_yuan',
-    });
-    assert.match(text, /【角色·/);
-    assert.doesNotMatch(text, /试探来历/);
-});
-
 test('add_fact 改文本时保留档位，误信单独记录', () => {
     let state = createEmptyState();
     state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
@@ -1371,13 +985,6 @@ test('buildExtractionPrompt 包含台账、对话与输出规则', () => {
     assert.doesNotMatch(user, /append_event/);
 });
 
-test('healthCheck 不再检查已退役的事件', () => {
-    const state = createEmptyState();
-    state.events.push({ id: 'e0001', problem: 'x', result: 'y', sourceMessages: [] });
-    const issues = healthCheck(state, { tokenBudget: 3000 });
-    assert.ok(!issues.some((issue) => issue.includes('事件')));
-});
-
 test('estimateTokens 对中文返回正数', () => {
     assert.ok(estimateTokens('林远持有混沌珠') >= 6);
 });
@@ -1542,7 +1149,7 @@ test('未了结的线索单独注入，了结后消失', () => {
             fact: {
                 id: 'f_debt',
                 text: '你欠柳三娘一块灵石',
-                visibility: 'public',
+                access: 'public',
                 thread_status: 'open',
                 thread_type: '人情',
                 thread_stake: '她会记恨',
@@ -1559,7 +1166,7 @@ test('未了结的线索单独注入，了结后消失', () => {
     state = run(state, [
         {
             op: 'add_fact',
-            fact: { id: 'f_debt', text: '你欠柳三娘一块灵石', visibility: 'public', thread_status: 'closed' },
+            fact: { id: 'f_debt', text: '你欠柳三娘一块灵石', access: 'public', thread_status: 'closed' },
             evidence: 'msg:1',
             confidence: 0.9,
         },
@@ -1787,41 +1394,6 @@ test('提取提示词覆盖档位写法与 set_tier', () => {
     assert.doesNotMatch(system, /knownBy/);
 });
 
-test('事件 stateChanges 写成字符串也能收下', () => {
-    const result = run(createEmptyState(), [
-        { op: 'append_event', time: '夜', place: '客栈', actors: ['user'], problem: 'p', decision: 'd', result: 'r', stateChanges: '你失去三十枚灵石', evidence: 'msg:0', confidence: 0.9 },
-    ]);
-    assert.deepEqual(result.state.events[0].stateChanges, ['你失去三十枚灵石']);
-});
-
-test('旧事件不再按关键词召回', () => {
-    let state = createEmptyState();
-    state = run(state, [
-        {
-            op: 'append_event',
-            time: '第一日',
-            place: '白鹿庄',
-            actors: ['user', '阿箬'],
-            problem: '白鹿庄大火',
-            decision: '你冲进火场',
-            result: '你救出阿箬',
-            stateChanges: ['阿箬获救'],
-            keywords: ['白鹿庄', '大火', '阿箬'],
-            sourceMessages: [1],
-            evidence: 'msg:1',
-            confidence: 0.9,
-        },
-    ]).state;
-    state.scene = { time: '第三十日', place: '客栈', participants: ['user'] };
-
-    const mentioned = assembleInjection(state, {
-        activeCharacterIds: ['user'],
-        protagonistId: 'user',
-        recentText: '你问：“白鹿庄那场火，你还记得吗？”',
-    });
-    assert.doesNotMatch(mentioned, /【相关旧事】|白鹿庄大火/);
-});
-
 test('set_scene 不会把职务当成角色', () => {
     const result = run(createEmptyState(), [
         { op: 'set_scene', scene: { time: '白日', place: '白玉广场', participants: ['user', '沈砚', '执事', '掌柜'] } },
@@ -1871,51 +1443,12 @@ test('提取提示里的角色键与引用都用姓名，不暴露内部 id', ()
     assert.match(user, /"beliefs":\{"苏绾":\{"state":"suspects"\}\}/);
 });
 
-test('扁平 append_event 的 actors/witnesses/beliefs 也归一化成 id', () => {
-    const result = run(createEmptyState(), [{
-        op: 'append_event',
-        time: '夜', place: '客栈',
-        actors: ['苏婉'], witnesses: ['王掌柜'],
-        problem: '试探', decision: '出手', result: '惊动',
-        stateChanges: ['x'], access: 'friend',
-        beliefs: { 王掌柜: { state: 'suspects' } },
-        evidence: 'msg:0', confidence: 0.9,
-    }]);
-    const event = result.state.events[0];
-    assert.match(event.actors[0], /^npc_\d+$/);
-    assert.match(event.witnesses[0], /^npc_\d+$/);
-    const wang = findCharacter(result.state, '王掌柜');
-    assert.equal(event.beliefs[wang.id].state, 'suspects');
-    assert.ok(findCharacter(result.state, '苏婉'));
-});
-
 test('reveal 找不到事实时拒绝，不凭空造条目', () => {
     const result = run(createEmptyState(), [
         { op: 'reveal', fact: 'f_typo', to: '苏婉', evidence: 'msg:0', confidence: 0.9 },
     ]);
     assert.equal(Object.keys(result.state.facts).length, 0);
-    assert.equal(result.state.events.length, 0);
     assert.ok(result.rejected.some((item) => /找不到事实/.test(item.reason)));
-});
-
-test('事件 [K:] 只看档位，公开级目击者不算知情', () => {
-    const state = createEmptyState();
-    state.characters.user = { id: 'user', name: '你', tier: 'main', access: 'protagonist', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
-    state.characters.guard = { id: 'guard', name: '城卫', tier: 'major', access: 'public', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
-    state.characters.su = { id: 'su', name: '苏绾', tier: 'major', access: 'friend', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
-    state.scene = { time: '夜', day: 1, place: '客栈', participants: ['user', 'guard', 'su'] };
-    const result = run(state, [{
-        op: 'append_event',
-        event: {
-            actors: ['user', 'su'], witnesses: ['guard'],
-            problem: '秘密行动', decision: '潜入', result: '成功', stateChanges: ['x'],
-            access: 'intimate', sourceMessages: [0],
-        },
-        evidence: 'msg:0', confidence: 0.9,
-    }]);
-    const text = assembleInjection(result.state, { tokenBudget: 3000, activeCharacterIds: ['user', 'guard', 'su'] });
-    const eventLine = text.split('\n').find((line) => line.startsWith('- [')) || '';
-    assert.doesNotMatch(eventLine, /\[K:[^\]]*城卫/);
 });
 
 test('改名后其他角色的 targetName 跟着更新', () => {
@@ -1924,23 +1457,6 @@ test('改名后其他角色的 targetName 跟着更新', () => {
         { op: 'rename_character', from: '乙', to: '丙', evidence: 'msg:1', confidence: 0.9 },
     ]).state;
     assert.equal(state.characters.user.relations[0].targetName, '丙');
-});
-
-test('重复事件合并时收紧档位并合并 beliefs', () => {
-    const base = {
-        op: 'append_event',
-        time: '夜', place: '客栈', actors: ['user'],
-        problem: 'p', decision: 'd', result: 'r', stateChanges: ['x'], sourceMessages: [0],
-        evidence: 'msg:0', confidence: 0.9,
-    };
-    let state = run(createEmptyState(), [{ ...base, event: { ...base, access: 'public' } }]).state;
-    state = run(state, [{
-        ...base,
-        event: { ...base, access: 'protagonist', beliefs: { 王掌柜: { state: 'suspects' } } },
-    }]).state;
-    assert.equal(entityAccess(state.events[0]), 'protagonist');
-    const wang = findCharacter(state, '王掌柜');
-    assert.equal(state.events[0].beliefs[wang.id].state, 'suspects');
 });
 
 test('move_item 找不到物品时拒绝，不凭空创建物品', () => {
@@ -2002,28 +1518,6 @@ test('set_tier 给 NPC 定档，主角档位不可改', () => {
     ]);
     assert.equal(characterAccess(findCharacter(result.state, '苏婉')), 'intimate');
     assert.equal(characterAccess(result.state.characters.user), 'protagonist');
-});
-
-test('事件按目击者定档：最疏远的目击者决定范围', () => {
-    let result = run(tierState(), [eventOp({ actors: ['user', '苏绾'] })]);
-    assert.equal(entityAccess(result.state.events[0]), 'friend');
-
-    result = run(tierState(), [eventOp({ actors: ['user'] })]);
-    assert.equal(entityAccess(result.state.events[0]), 'protagonist');
-
-    result = run(tierState(), [eventOp({ actors: ['user', '苏绾'], witnesses: ['user', '苏绾', '王掌柜'] })]);
-    assert.equal(entityAccess(result.state.events[0]), 'public');
-});
-
-test('重复事件合并目击者会放宽范围', () => {
-    let result = run(tierState(), [eventOp({ actors: ['user', '苏绾'] })]);
-    assert.equal(entityAccess(result.state.events[0]), 'friend');
-
-    result = run(result.state, [
-        eventOp({ actors: ['user', '苏绾'], witnesses: ['user', '苏绾', '王掌柜'] }),
-    ]);
-    assert.equal(result.state.events.length, 1);
-    assert.equal(entityAccess(result.state.events[0]), 'public');
 });
 
 test('顶层事实按目击者定档，不再一律主角级', () => {
@@ -2148,39 +1642,6 @@ test('set_scene 记录最近同场日', () => {
     assert.equal(findCharacter(result.state, '苏绾').lastSeenDay, 5);
 });
 
-test('重复事件会补齐关键词', () => {
-    let state = run(createEmptyState(), [
-        { op: 'append_event', time: '第一日', place: '白鹿庄', actors: ['user'], problem: '大火', decision: '冲进去', result: '救人', stateChanges: ['救出阿箬'], sourceMessages: [0], evidence: 'msg:0', confidence: 0.9 },
-    ]).state;
-    state = run(state, [
-        { op: 'append_event', time: '第一日', place: '白鹿庄', actors: ['user'], problem: '大火', decision: '冲进去', result: '救人', stateChanges: ['救出阿箬'], keywords: ['白鹿庄', '大火'], sourceMessages: [0], evidence: 'msg:0', confidence: 0.9 },
-    ]).state;
-    assert.equal(state.events.length, 1);
-    assert.deepEqual(state.events[0].keywords, ['白鹿庄', '大火']);
-});
-
-test('两个字的泛指关键词单独命中不触发召回', () => {
-    let state = run(createEmptyState(), [
-        {
-            op: 'append_event',
-            time: '第一日',
-            place: '客栈',
-            actors: ['user'],
-            problem: '买了灵石',
-            decision: '付钱',
-            result: '成交',
-            stateChanges: ['灵石成交'],
-            keywords: ['灵石'],
-            sourceMessages: [0],
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-    ]).state;
-    state.scene = { time: '夜', place: '客栈', participants: ['user'] };
-    const options = { activeCharacterIds: ['user'], protagonistId: 'user' };
-    assert.doesNotMatch(assembleInjection(state, { ...options, recentText: '你数了数灵石。' }), /【相关旧事】/);
-});
-
 test('关闭离场角色名录后不再注入其他角色', () => {
     let state = run(createEmptyState(), [
         { op: 'set', character: 'user', field: 'gender', value: '未知', evidence: 'msg:0', confidence: 0.9 },
@@ -2202,41 +1663,6 @@ test('主角物品过多时截断并给出计数', () => {
     state.scene = { time: '夜', place: '客栈', participants: ['user'] };
     const text = assembleInjection(state, { activeCharacterIds: ['user'], protagonistId: 'user' });
     assert.match(text, /另有 5 项/);
-});
-
-test('旧事件保留在数据里，但既不注入也不占预算', () => {
-    const ops = [];
-    for (let i = 0; i < 20; i += 1) {
-        ops.push({
-            op: 'append_event',
-            time: `第${i}日`,
-            place: '客栈',
-            actors: ['user'],
-            problem: `问题${i}`,
-            decision: '决策',
-            result: '结果',
-            importance: 'major',
-            sourceMessages: [i],
-            evidence: 'msg:0',
-            confidence: 0.9,
-        });
-    }
-    const state = run(createEmptyState(), ops).state;
-    assert.equal(state.events.length, 20);
-    state.scene = { time: '夜', place: '客栈', participants: ['user'] };
-    const text = assembleInjection(state, { activeCharacterIds: ['user'], protagonistId: 'user', tokenBudget: 5000 });
-    assert.doesNotMatch(text, /事件台账|问题0|问题19| → /);
-});
-
-test('旧版 objective 字段不再注入', () => {
-    let state = run(createEmptyState(), [
-        { op: 'set', character: 'user', field: 'objective', value: '夺回宗门', evidence: 'msg:0', confidence: 0.9 },
-        { op: 'set', character: 'user', field: 'realm', value: '筑基一层', evidence: 'msg:0', confidence: 0.9 },
-    ]).state;
-    state.scene = { time: '夜', place: '客栈', participants: ['user'] };
-    const text = assembleInjection(state, { activeCharacterIds: ['user'], protagonistId: 'user' });
-    assert.doesNotMatch(text, /夺回宗门/);
-    assert.match(text, /realm：筑基一层/);
 });
 
 test('提取提示词区分玩家内心与当众说出', () => {
@@ -2264,16 +1690,16 @@ test('注入渲染 NPC 对玩家的称呼', () => {
 });
 
 test('parseExtractionResponse 容忍字符串里的裸换行', () => {
-    const text = '{"ops":[{"op":"append_event","event":{"problem":"第一行\n第二行"}}],"leaks":[]}';
+    const text = '{"ops":[{"op":"add_fact","fact":{"text":"第一行\n第二行"}}],"leaks":[]}';
     const data = parseExtractionResponse(text);
-    assert.equal(data.ops[0].event.problem, '第一行\n第二行');
+    assert.equal(data.ops[0].fact.text, '第一行\n第二行');
 });
 
 test('parseExtractionResponse 容忍 op 提前闭合', () => {
-    const text = '{"ops":[{"op":"append_event","event":{"problem":"x"}},"evidence":"msg:0","confidence":0.9}],"leaks":[]}';
+    const text = '{"ops":[{"op":"add_fact","fact":{"text":"x"}},"evidence":"msg:0","confidence":0.9}],"leaks":[]}';
     const data = parseExtractionResponse(text);
     assert.equal(data.ops[0].evidence, 'msg:0');
-    assert.equal(data.ops[0].event.problem, 'x');
+    assert.equal(data.ops[0].fact.text, 'x');
 });
 
 test('重复抽取同一关系不新增版本', () => {
@@ -2315,34 +1741,17 @@ test('adjust_item 接受对象形式的 item', () => {
     assert.equal(item.unit, '枚');
 });
 
-test('事实与事件文本里的 user 归一化为「你」', () => {
+test('事实与状态文本里的 user 归一化为「你」', () => {
     const result = run(createEmptyState(), [
         {
             op: 'add_fact',
-            fact: { id: 'f1', text: '王掌柜称 user 为少主', visibility: 'secret', knownBy: { user: { state: 'knows' } } },
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-        {
-            op: 'append_event',
-            event: {
-                time: '夜',
-                place: '客栈',
-                actors: ['user'],
-                problem: 'user 追问身份',
-                decision: '王掌柜承认',
-                result: 'user 得知真相',
-                stateChanges: ['王掌柜承认身份'],
-                sourceMessages: [0],
-            },
+            fact: { id: 'f1', text: '王掌柜称 user 为少主', access: 'protagonist' },
             evidence: 'msg:0',
             confidence: 0.9,
         },
         { op: 'set', character: '王掌柜', field: 'status', value: '效忠 user 的旧仆', evidence: 'msg:0', confidence: 0.9 },
     ]);
     assert.equal(result.state.facts.f1.text, '王掌柜称 你 为少主');
-    assert.equal(result.state.events[0].problem, '你 追问身份');
-    assert.equal(result.state.events[0].result, '你 得知真相');
     assert.equal(findCharacter(result.state, '王掌柜').state.status.current, '效忠 你 的旧仆');
 });
 
@@ -2391,54 +1800,6 @@ test('progress 非数字被拒绝', () => {
     ]);
     assert.equal(result.rejected.length, 1);
     assert.equal(result.state.characters.user?.state?.progress, undefined);
-});
-
-test('set_scene 推进日期，旧事件仍保留但不注入', () => {
-    const result = run(createEmptyState(), [
-        { op: 'set_scene', scene: { time: '夏·六月初三·午时', day: 1, place: '白玉广场', participants: ['user'] } },
-        {
-            op: 'append_event',
-            event: {
-                time: '夏·六月初三',
-                place: '白玉广场',
-                actors: ['user'],
-                problem: '沈砚被追债',
-                decision: '你替他挡下',
-                result: '追债的人走了',
-                sourceMessages: [0],
-                importance: 'major',
-            },
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-        { op: 'set_scene', scene: { time: '夏·七月初三·午时', day: 31, place: '白玉广场', participants: ['user'] } },
-    ]);
-    assert.equal(result.state.scene.day, 31);
-    assert.equal(result.state.events[0].day, 1);
-    const text = assembleInjection(result.state, { protagonistId: 'user', activeCharacterIds: ['user'] });
-    assert.doesNotMatch(text, /沈砚被追债|约 1 个月前/);
-});
-
-test('缺少日期时不编造「多久以前」', () => {
-    const result = run(createEmptyState(), [
-        {
-            op: 'append_event',
-            event: {
-                time: '某日',
-                place: '某地',
-                actors: ['user'],
-                problem: '甲',
-                decision: '乙',
-                result: '丙',
-                sourceMessages: [0],
-            },
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-    ]);
-    const text = assembleInjection(result.state, { protagonistId: 'user', activeCharacterIds: ['user'] });
-    assert.doesNotMatch(text, /\[\d+ 天前/);
-    assert.doesNotMatch(text, /\[约 \d+ 个月前/);
 });
 
 test('replayHistory 按场景参与者重建角色档案且不改写日志', () => {
@@ -2525,106 +1886,6 @@ test('怀疑与不知情不会进知情名单', () => {
     assert.doesNotMatch(text, /\[K:[^\]]*苏婉/);
 });
 
-test('普通事件必须写 stateChanges', () => {
-    const result = run(createEmptyState(), [
-        {
-            op: 'append_event',
-            event: { problem: '看了一眼', decision: '没动', result: '无事', sourceMessages: [0] },
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-        {
-            op: 'append_event',
-            event: {
-                problem: '买下符纸', decision: '付钱', result: '成交',
-                stateChanges: ['灵石 -3'], sourceMessages: [1],
-            },
-            evidence: 'msg:1',
-            confidence: 0.9,
-        },
-    ]);
-    assert.equal(result.state.events.length, 1);
-    assert.equal(result.state.events[0].problem, '买下符纸');
-    assert.equal(result.rejected.length, 1);
-});
-
-test('每轮普通事件最多 2 条，major 不占配额', () => {
-    const result = run(createEmptyState(), [
-        { op: 'append_event', event: { problem: 'a', result: 'A', stateChanges: ['x'], sourceMessages: [0] }, evidence: 'msg:0', confidence: 0.9 },
-        { op: 'append_event', event: { problem: 'b', result: 'B', stateChanges: ['y'], sourceMessages: [1] }, evidence: 'msg:1', confidence: 0.9 },
-        { op: 'append_event', event: { problem: 'c', result: 'C', stateChanges: ['z'], sourceMessages: [2] }, evidence: 'msg:2', confidence: 0.9 },
-        { op: 'append_event', event: { problem: 'd', result: 'D', importance: 'major', sourceMessages: [3] }, evidence: 'msg:3', confidence: 0.9 },
-    ]);
-    assert.equal(result.state.events.length, 3);
-    assert.deepEqual(result.state.events.map((event) => event.problem), ['a', 'b', 'd']);
-    assert.equal(result.rejected.length, 1);
-});
-
-test('同场地同人物的拆碎事件自动合并', () => {
-    const result = run(createEmptyState(), [
-        {
-            op: 'append_event',
-            event: {
-                place: '破庙', actors: ['user', '沈砚'],
-                problem: '两个人打起来', decision: '你挡在中间', result: '暂时停手',
-                stateChanges: ['冲突暂缓'], keywords: ['破庙'], sourceMessages: [0],
-            },
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-        {
-            op: 'append_event',
-            event: {
-                place: '破庙', actors: ['user', '沈砚'],
-                problem: '其中一人拔刀', decision: '你夺下刀', result: '人跑了',
-                stateChanges: ['刀被夺下'], keywords: ['钢刀'], sourceMessages: [0, 1],
-            },
-            evidence: 'msg:1',
-            confidence: 0.9,
-        },
-    ]);
-    assert.equal(result.state.events.length, 1);
-    const event = result.state.events[0];
-    assert.equal(event.problem, '两个人打起来');
-    assert.equal(event.result, '人跑了');
-    assert.deepEqual([...event.keywords].sort(), ['破庙', '钢刀'].sort());
-    assert.deepEqual(event.stateChanges, ['冲突暂缓', '刀被夺下']);
-    assert.deepEqual([...event.sourceMessages].sort((a, b) => a - b), [0, 1]);
-});
-
-test('公开事件写到秘密物品名时自动降级为 secret', () => {
-    const result = run(createEmptyState(), [
-        { op: 'set', character: 'user', field: 'gender', value: '男', evidence: 'msg:0', confidence: 0.9 },
-        {
-            op: 'add_item',
-            character: 'user',
-            item: {
-                id: 'i_yu', name: '青玉牌', access: 'protagonist',
-            },
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-        {
-            op: 'append_event',
-            event: {
-                place: '街角',
-                actors: ['user'],
-                problem: '老乞丐搭话',
-                decision: '你揣着玉牌走到街角',
-                result: '他笑了笑',
-                stateChanges: ['被认出'],
-                sourceMessages: [0],
-                access: 'public',
-            },
-            evidence: 'msg:0',
-            confidence: 0.9,
-        },
-    ]);
-    const event = result.state.events[0];
-    // 公开事件写到秘密物品名，自动收紧为主角级。
-    assert.equal(entityAccess(event), 'protagonist');
-});
-
 test('稳定 ID：姓名揭示只改名，不新建档案', () => {
     const state = run(createEmptyState(), [
         { op: 'set', character: '月白长裙女修', name: '月白长裙女修', field: 'gender', value: '女', evidence: 'msg:0', confidence: 0.9 },
@@ -2677,64 +1938,19 @@ test('稳定 ID：merge_character 迁移数据与引用', () => {
     assert.equal(result.state.characters[from.id], undefined);
 });
 
-test('稳定 ID：旧名字台账迁移并重写版本日志', () => {
-    const state = createEmptyState();
-    state.meta.identityVersion = 0;
-    state.characters = {
-        苏婉: {
-            id: '苏婉', name: '苏婉', tier: 'major', state: {}, items: [],
-            relations: [{ target: '王掌柜', targetName: '王掌柜', validTo: null }],
-            facts: [], skills: [], abilities: [],
-        },
-        王掌柜: {
-            id: '王掌柜', name: '王掌柜', tier: 'major', state: {}, items: [],
-            relations: [], facts: [], skills: [], abilities: [],
-        },
-    };
-    state.facts = { f1: { id: 'f1', text: '秘密', access: 'protagonist', beliefs: { 苏婉: { state: 'suspects' } } } };
-    state.events = [{
-        id: 'e1',
-        actors: ['苏婉'],
-        witnesses: ['王掌柜'],
-        beliefs: { 苏婉: { state: 'suspects' } },
-        problem: 'x',
-        decision: 'y',
-        result: 'z',
-    }];
-    state.meta.history = [{
-        to: 0,
-        prefixHash: 'h',
-        ops: [{ op: 'set', character: '苏婉', field: 'gender', value: '女' }],
-        scene: { participants: ['苏婉'] },
-    }];
-
-    assert.equal(migrateStableIds(state), true);
-    const su = findCharacter(state, '苏婉');
-    const wang = findCharacter(state, '王掌柜');
-    assert.notEqual(su.id, '苏婉');
-    assert.equal(state.facts.f1.beliefs[su.id].state, 'suspects');
-    // 事件已退役：迁移不再改写旧事件里的名字，也不为它们新建角色。
-    assert.deepEqual(state.events[0].actors, ['苏婉']);
-    assert.deepEqual(state.events[0].witnesses, ['王掌柜']);
-    assert.equal(state.events[0].beliefs['苏婉'].state, 'suspects');
-    assert.equal(state.meta.history[0].ops[0].character, su.id);
-    assert.deepEqual(state.meta.history[0].scene.participants, [su.id]);
-    assert.equal(migrateStableIds(state), false);
-});
-
 test('reveal 公开条目是空操作，不会把它变成秘密', () => {
     let state = createEmptyState();
     state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [] };
     state = run(state, [
         { op: 'add_skill', character: 'lin_yuan', skill: { id: 'sk_open', name: '御剑术' }, evidence: 'msg:1', confidence: 0.9 },
     ]).state;
-    const before = state.events.length;
+    const before = entityAccess(state.characters.lin_yuan.skills[0]);
     state = run(state, [
         { op: 'reveal', skill: 'sk_open', to: 'su_wan', method: '当众演示', evidence: 'msg:2', confidence: 0.9 },
     ]).state;
     const skill = state.characters.lin_yuan.skills[0];
-    assert.ok(!skill.knownBy || Object.keys(skill.knownBy).length === 0);
-    assert.equal(state.events.length, before);
+    assert.equal(entityAccess(skill), before);
+    assert.equal(before, 'public');
 });
 
 test('所有秘密都冷却时仍输出冷条目计数', () => {
@@ -2772,15 +1988,6 @@ test('关闭知情约束仍保留主角秘密内容', () => {
             },
             evidence: 'msg:0', confidence: 0.9,
         },
-        {
-            op: 'append_event',
-            event: {
-                time: '第一日', place: '客栈', actors: ['user'], problem: '秘密行动',
-                decision: '潜入', result: '成功', importance: 'major',
-                access: 'protagonist', sourceMessages: [0],
-            },
-            evidence: 'msg:0', confidence: 0.9,
-        },
     ]).state;
     const text = assembleInjection(state, { tokenBudget: 3000, knowledgeGate: false });
     assert.match(text, /混沌珠/);
@@ -2793,11 +2000,6 @@ test('关闭知情约束仍保留主角秘密内容', () => {
 
 test('回放真实版本日志不会造出幽灵角色', () => {
     const result = run(createEmptyState(), [
-        {
-            op: 'append_event', time: '第一日', place: '客栈', actors: ['苏绾', '你'],
-            problem: '事', decision: '做', result: '成', stateChanges: ['有变化'],
-            sourceMessages: [0], evidence: 'msg:0', confidence: 0.9,
-        },
         { op: 'set_tier', character: '苏绾', access: 'friend', reason: '同门名分', evidence: 'msg:0', confidence: 0.9 },
     ]);
     const sceneOp = {
@@ -2870,14 +2072,13 @@ test('回放保留同一次结算里改名的旧名别名', () => {
     assert.equal(Object.values(replayed.characters).length, 1);
 });
 
-test('reveal 只带怀疑时不写泄露事件、不改档位', () => {
+test('reveal 只带怀疑时不改档位', () => {
     const state = tierState();
     state.facts.f1 = { id: 'f1', text: '你藏着玉牌', access: 'protagonist', keywords: [], history: [] };
     const result = run(state, [
         { op: 'reveal', fact: 'f1', to: '苏绾', suspicion: '看向你怀里', evidence: 'msg:0', confidence: 0.9 },
     ]);
     assert.equal(entityAccess(result.state.facts.f1), 'protagonist');
-    assert.equal(result.state.events.length, 0);
     assert.equal(result.changedOps.filter((op) => op.op === 'reveal').length, 0);
     assert.equal(result.state.facts.f1.beliefs.su.state, 'suspects');
 });
@@ -2918,22 +2119,6 @@ test('中文身份字段也受写保护', () => {
     assert.ok(result.rejected.some((item) => /不能改写玩家的 spiritRoot/.test(item.reason)));
 });
 
-test('有 user 时，旧数据里 NPC 的 tier main 会被降级', () => {
-    const state = createEmptyState();
-    state.characters.user = {
-        id: 'user', name: '你', tier: 'main', access: 'protagonist',
-        state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
-    };
-    state.characters.su = {
-        id: 'su', name: '苏绾', tier: 'main', access: 'protagonist',
-        state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
-    };
-    state.meta.protagonistId = 'su';
-    normalizeState(state);
-    assert.equal(state.meta.protagonistId, 'user');
-    assert.equal(characterAccess(state.characters.su), 'public');
-});
-
 test('reveal 目标写错名字时拒绝，不新建角色', () => {
     const state = tierState();
     state.facts.f1 = { id: 'f1', text: '你藏着玉牌', access: 'protagonist', keywords: [], history: [] };
@@ -2943,35 +2128,6 @@ test('reveal 目标写错名字时拒绝，不新建角色', () => {
     assert.equal(entityAccess(result.state.facts.f1), 'protagonist');
     assert.ok(!Object.values(result.state.characters).some((character) => character.name === '苏婉'));
     assert.ok(result.rejected.some((item) => /找不到角色/.test(item.reason)));
-});
-
-test('有 user 时，NPC 从 tier main 降级时保留朋友档位', () => {
-    const state = createEmptyState();
-    state.characters.user = {
-        id: 'user', name: '你', tier: 'main', access: 'protagonist',
-        state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
-    };
-    state.characters.su = {
-        id: 'su', name: '苏绾', tier: 'main', access: 'friend',
-        state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
-    };
-    normalizeState(state);
-    assert.equal(state.characters.su.tier, 'major');
-    assert.equal(characterAccess(state.characters.su), 'friend');
-});
-
-test('没有 user 且出现多个 tier main 时，没有角色拿到主角级', () => {
-    const state = createEmptyState();
-    for (const id of ['a', 'b']) {
-        state.characters[id] = {
-            id, name: id, tier: 'main', access: 'protagonist',
-            state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
-        };
-    }
-    normalizeState(state);
-    assert.equal(characterAccess(state.characters.a), 'public');
-    assert.equal(characterAccess(state.characters.b), 'public');
-    assert.equal(state.characters.a.tier, 'major');
 });
 
 test('未了结条目上的怀疑与误信会注入', () => {
@@ -2992,23 +2148,6 @@ test('未了结条目上的怀疑与误信会注入', () => {
         assert.match(text, /苏绾怀疑「账本被人换过」/);
         assert.match(text, /王掌柜误以为「你已经查完了」/);
     }
-});
-
-test('旧事件上的怀疑与误信也不再注入', () => {
-    const state = tierState();
-    state.events.push({
-        id: 'e1',
-        day: 1,
-        place: '客栈',
-        problem: '账本失踪',
-        decision: '暗中查访',
-        result: '没有找到',
-        importance: 'major',
-        actors: ['user'],
-        beliefs: { su: { state: 'suspects', suspicion: '你动过账本' } },
-    });
-    const text = assembleInjection(state, { activeCharacterIds: ['user'], protagonistId: 'user' });
-    assert.doesNotMatch(text, /苏绾怀疑「你动过账本」/);
 });
 
 test('条目超过上限时，正文提到的物品优先保留', () => {

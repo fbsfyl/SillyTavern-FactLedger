@@ -40,8 +40,8 @@
 | ID | 测试项 | 预期 |
 |---|---|---|
 | A01 | `node --check` | index.js / ledger.js / genres.js 全通过 |
-| A02 | `node --test` | 171/171 |
-| A03 | manifest | 0.14.3 |
+| A02 | `node --test` | 129/129 |
+| A03 | manifest | 0.15.0 |
 | A04 | 残留检查 | 无 `perceived*` / `[K:narrator]` / NPC 隔离路径 |
 
 ---
@@ -101,11 +101,11 @@ B07 / B08 用主 RP 模型 `aifeifei798/Qwen3.8-Queen-27B`，各 1 次，tempera
 | D01 | 双时态 | 旧值关闭，新值 current |
 | D02 | 金钱 | 合并、增减、清零、精确设置 |
 | D03 | 多功法 | add/set/remove |
-| D04 | 旧事件 | 保留数据，但不注入、不召回 |
+| D04 | 事件字段 | 数据模型里不存在 `events` |
 | D05 | 状态栏 | 五块、只显示主角、NPC 真相 |
 | D06 | 设置 | 题材、profile、开关、编辑知情者 |
 
-这些主要由现有 171 个单测覆盖，浏览器只做一次冒烟。
+这些主要由现有 129 个单测覆盖，浏览器只做一次冒烟。
 
 ---
 

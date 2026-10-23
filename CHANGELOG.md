@@ -3,6 +3,16 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
 
+## 0.15.0
+
+**不兼容旧数据**：插件仍在开发中，这一版删除了全部向后兼容代码。旧聊天里的台账可能为空或角色对不上，直接新开聊天即可。
+
+- 删除 `state.events` 字段，以及事件 op 的执行与校验分支
+- 删除 `migrateStableIds`、`migrateNpcFields`、`migrateNpcIsolation`、`migrateRetiredSettings`
+- 删除旧格式兜底：`visibility`/`knownBy` 折算档位、无 `user` 时按 `tier:"main"` 找主角、`scene.chapter → time`
+- 主角固定为 `user`；`tier:"main"` 不再被当作主角
+- 测试精简为 129 条，全部面向当前格式
+
 ## 0.14.3
 
 - 修复：待复核采纳入口改用统一判定，`reveal {event}` 不再生效；加载时也一并清掉
