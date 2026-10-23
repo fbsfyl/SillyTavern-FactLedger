@@ -3,6 +3,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
 
+## 0.14.3
+
+- 修复：待复核采纳入口改用统一判定，`reveal {event}` 不再生效；加载时也一并清掉
+- 修复：`migrateStableIds` 先丢弃历史里的退役事件 op，扁平事件 op 不再按 actors/witnesses 新建角色
+- 测试：补「`reveal {event}` 待复核清理」「扁平事件 op 迁移」「旧默认规则迁移后等于当前预设」3 条用例
+- 文档：DESIGN 去掉 `events` 示例，README/DESIGN 措辞与当前默认规则对齐
+- 171 个单元测试
+
 ## 0.14.2
 
 - 修复：旧日志里的事件 op 不再被 `migrateStableIds` 解析姓名或新建角色

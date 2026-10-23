@@ -2,12 +2,12 @@
 
 [![release](https://img.shields.io/github/v/release/fbsfyl/SillyTavern-FactLedger?label=release)](https://github.com/fbsfyl/SillyTavern-FactLedger/releases)
 [![license](https://img.shields.io/github/license/fbsfyl/SillyTavern-FactLedger)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-169-brightgreen)](test/ledger.test.mjs)
+[![tests](https://img.shields.io/badge/tests-171-brightgreen)](test/ledger.test.mjs)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.19%2B-5b4ee6)](https://github.com/SillyTavern/SillyTavern)
 
 面向 SillyTavern 文字冒险 / 角色扮演的结构化记忆扩展：**当前状态台账 + 双时态历史 + 秘密知情约束**。
 
-- 版本：`0.14.2`
+- 版本：`0.14.3`
 - 类型：SillyTavern 正式扩展（manifest + 前端模块）
 - 依赖：无第三方 npm 依赖
 
@@ -33,7 +33,7 @@
 隔离的手段是**在词条进入剧情时，明确告诉叙事者这条信息该被谁知晓**，而不是把词条从注入里删掉。
 
 - 每条秘密带一个档位（主角级/亲密级/朋友级/公开级），角色的亲近程度决定默认能不能知道。秘密照常进入注入，移到【秘密知情】，写成 `亲密级；默认知情=…；默认不知情=…；怀疑=…；误以为…`；留在普通行里的秘密则带 `[K:…]`。
-- **正文明确优先，正文沉默时档位兜底**：正文写明谁不知道/谁知道，就按正文，不要用台账反驳；正文没写时才按档位。档位要防两种错：① 旧事超出上下文，叙事者没看到，把明明知情的 NPC 写成不知道；② 叙事者看到了现场，但正文没写某个不知情 NPC 不知道，就顺口让他知道。所以在场/看到/沉默都不等于知情。
+- **正文明确优先，正文沉默时档位兜底**：正文写明谁不知道/谁知道，就按正文，不要用台账反驳；正文没写时才按档位。档位要防两种错：① 旧秘密超出上下文，叙事者没看到，把明明知情的 NPC 写成不知道；② 叙事者看到了现场，但正文没写某个不知情 NPC 不知道，就顺口让他知道。所以在场、看到、沉默都不等于知情。
 - 承诺保密不改变谁知道，只约束「会不会传出去」。只告诉某一个人时，`reveal` 会把档位放宽到该人所在档；同档其他人也会知道。这是档位级的精度代价。
 - 只有两种情况会真正移除词条：一是冷词条（超出热窗口、无人在场、无关键词命中），只隐藏并计数，相关角色回来或被提到的，自动恢复；二是 token 预算不足，且秘密是最后才砍的部分。
 - 隔离的对象是主角的信息边界，不是给 NPC 加独立档案。NPC 自身的境界、身份、关系对玩家公开，这是正确的；判断一条隔离是否必要，只看它会不会让 NPC 说出或利用主角不该被知道的事。
@@ -126,7 +126,7 @@ SillyTavern-FactLedger/
 │   ├── ledger.js          # 纯逻辑：双时态/认知/注入/泄露/健康检查
 │   └── genres.js          # 题材预设
 ├── test/
-│   └── ledger.test.mjs    # 169 个单元测试
+│   └── ledger.test.mjs    # 171 个单元测试
 ├── docs/
 │   └── DESIGN.md          # 数据模型 / 提取协议 / 注入装配
 ├── CHANGELOG.md

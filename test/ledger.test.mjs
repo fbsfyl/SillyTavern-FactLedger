@@ -271,6 +271,15 @@ test('旧默认规则的其余「旧事」措辞也会一起迁移', () => {
     assert.match(settings.narrativeRules, /旧秘密超出上下文/);
 });
 
+test('0.13.x 的修仙默认规则迁移后等于当前预设，题材切换能识别为默认', () => {
+    const legacy = '【台账】注入的【事实台账】是玩家已知事实的摘要，玩家始终知道真相；它优先于你的推测，只用于确认已知事实，不能据此改写玩家的姓名、身世、灵根、体质与已经写出的经历。\n\n'
+        + '【知情】先看正文：正文明确写谁不知道/被瞒着，就按不知道；明确写谁知道，就按知道；不要用台账反驳正文。正文没写时按台账：旧事离开上下文也按这里，档位够格的默认知情，不够格的默认不知情。要避免两种错法：① 旧事超出上下文，把明明知情的 NPC 写成不知道；② 在场上看到了，但正文没写某个不知情 NPC 不知道，就顺口让他知道。在场不等于知情，沉默也不等于知情。关系升级后，该档旧秘密默认知情；【秘密知情】里：怀疑= 可以试探、旁敲，但不能说破；误以为= 按错误认知行动，不要替其纠正。\n\n'
+        + '【旧事】玩家提到旧事时，以【相关旧事】为准，不要改写细节。【未了结】里的旧账、人情、仇怨仍然有效，相关角色在场时可以推进，不要当成已经了结。';
+    const settings = { narrativeRules: legacy };
+    migrateRetiredSettings(settings);
+    assert.equal(settings.narrativeRules, getGenrePreset('xianxia').narrativeRules);
+});
+
 test('旧日志里的事件 op 不再解析姓名或新建角色', () => {
     const state = createEmptyState();
     state.meta.identityVersion = 0;
@@ -291,7 +300,7 @@ test('旧日志里的事件 op 不再解析姓名或新建角色', () => {
     assert.equal(names.length, 1);
     assert.ok(!names.includes('苏婉'));
     assert.ok(!names.includes('王掌柜'));
-    assert.deepEqual(state.meta.history[0].ops[0].event.actors, ['苏婉']);
+    assert.equal(state.meta.history[0].ops.length, 0);
 });
 
 test('回放会跳过事件 op，不造角色也不重建事件', () => {
@@ -311,11 +320,34 @@ test('旧聊天里的事件待复核会被清掉', () => {
     const state = createEmptyState();
     state.meta.review = [
         { op: { op: 'append_event', event: { problem: 'x', result: 'y' } } },
+        { op: { op: 'reveal', event: 'e0001', to: 'su', evidence: 'msg:1' } },
         { op: { op: 'set', character: 'user', field: 'realm', value: '练气三层' } },
     ];
     normalizeState(state);
     assert.equal(state.meta.review.length, 1);
     assert.equal(state.meta.review[0].op.op, 'set');
+});
+
+test('旧日志里的扁平事件 op 也会被丢掉，不按 actors 新建角色', () => {
+    const state = createEmptyState();
+    state.meta.identityVersion = 0;
+    state.characters = {
+        甲: {
+            id: '甲', name: '甲', tier: 'major', state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
+        },
+    };
+    state.meta.history = [{
+        to: 0,
+        ops: [
+            { op: 'append_event', actors: ['苏婉'], witnesses: ['王掌柜'], problem: 'x', result: 'y' },
+            { op: 'reveal', event: 'e0001', to: '苏婉', evidence: 'msg:0' },
+            { op: 'set', character: '甲', field: 'realm', value: '练气三层', evidence: 'msg:0' },
+        ],
+    }];
+    migrateStableIds(state);
+    const names = Object.values(state.characters).map((character) => character.name).sort();
+    assert.deepEqual(names, ['甲']);
+    assert.deepEqual(state.meta.history[0].ops.map((op) => op.op), ['set']);
 });
 
 test('validateOps 拒绝缺证据与低置信度，标记待复核', () => {

@@ -1817,7 +1817,7 @@ function acceptReview(index) {
     if (!entry) return;
     const rawOp = entry?.op && typeof entry.op === 'object' ? entry.op : entry;
     const { needsReview, ...op } = rawOp;
-    if (op?.op === 'append_event' || op?.op === 'add_event') {
+    if (filterRetiredOps([op]).ignored) {
         dismissReview(index);
         setStatus('事件已退役，这条待复核已丢弃。');
         return;
