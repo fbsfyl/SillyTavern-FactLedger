@@ -134,6 +134,34 @@ test('reveal 放宽档位', () => {
     assert.ok((result.changedOps || []).some((op) => op.op === 'reveal'));
 });
 
+test('被动暴露给公开级目击者不降档，显式当众公开才降档', () => {
+    let state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main', access: 'protagonist',
+        state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
+    };
+    state.characters.zhao = {
+        id: 'zhao', name: '赵长老', tier: 'major', access: 'public',
+        state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
+    };
+    state.facts.f1 = { id: 'f1', text: '你藏着玉牌', access: 'protagonist', keywords: [], history: [] };
+
+    let result = run(state, [
+        { op: 'reveal', fact: 'f1', to: 'zhao', method: '被他看见', evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    assert.equal(entityAccess(result.state.facts.f1), 'protagonist');
+
+    result = run(result.state, [
+        { op: 'reveal', fact: 'f1', to: 'zhao', method: '被他看见', passive: true, evidence: 'msg:2', confidence: 0.9 },
+    ]);
+    assert.equal(entityAccess(result.state.facts.f1), 'protagonist');
+
+    result = run(result.state, [
+        { op: 'reveal', fact: 'f1', to: 'zhao', method: '当众承认', access: 'public', evidence: 'msg:3', confidence: 0.9 },
+    ]);
+    assert.equal(entityAccess(result.state.facts.f1), 'public');
+});
+
 test('validateOps 拒绝缺证据与低置信度，标记待复核', () => {
     const state = createEmptyState();
     const result = validateOps([
@@ -1518,8 +1546,9 @@ test('注入把知情写成正文优先，并给出台账默认', () => {
 
 test('提取提示要求正文明确写才知道', () => {
     const { system } = buildExtractionPrompt(createEmptyState(), []);
-    assert.match(system, /正文明确写某人知道了/);
+    assert.match(system, /主动告知、主动展示、明确承认 → reveal/);
     assert.match(system, /把档位放宽到该人的档位/);
+    assert.match(system, /被动被看见或偷听：不要 reveal/);
     assert.match(system, /正文没写某人知道\/不知道时/);
     assert.match(system, /不要因为他在场、看到或沉默就推断/);
 });
@@ -1685,7 +1714,7 @@ test('提取提示词区分玩家内心与当众说出', () => {
 
 test('提取提示要求按正文双向记录知情（重复覆盖）', () => {
     const { system } = buildExtractionPrompt(createEmptyState(), []);
-    assert.match(system, /正文明确写某人知道了/);
+    assert.match(system, /主动告知、主动展示、明确承认 → reveal/);
     assert.match(system, /正文明确写某人不知道\/被瞒着/);
 });
 
@@ -1853,9 +1882,9 @@ test('reveal 字段时放宽到该角色所在档', () => {
     const result = run(createEmptyState(), [
         { op: 'set', character: 'user', field: 'realm', value: '筑基', access: 'protagonist', evidence: 'msg:0', confidence: 0.9 },
         { op: 'set', character: '老乞丐', field: 'gender', value: '男', evidence: 'msg:0', confidence: 0.9 },
-        { op: 'reveal', to: '老乞丐', character: 'user', field: 'realm', method: '神识', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'reveal', to: '老乞丐', character: 'user', field: 'realm', method: '当众承认', access: 'public', evidence: 'msg:0', confidence: 0.9 },
     ]);
-    // 老乞丐是公开级，放宽档位等于公开。
+    // 老乞丐是公开级；主动当众承认并显式写 access 才放宽到公开。
     assert.equal(entityAccess(result.state.characters.user.state.realm), 'public');
 });
 
@@ -2253,6 +2282,7 @@ test('角色个人事实参与泄露检测，并可用 reveal 放宽', () => {
             fact: '你私藏半块玉牌',
             to: 'wang',
             method: '当面拿出',
+            access: 'public',
             evidence: 'msg:0',
             confidence: 0.9,
         },
