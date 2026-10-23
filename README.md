@@ -7,7 +7,7 @@
 
 面向 SillyTavern 文字冒险 / 角色扮演的结构化记忆扩展：**当前状态台账 + 双时态历史 + 秘密知情约束**。
 
-- 版本：`0.15.3`
+- 版本：`0.15.4`
 - 类型：SillyTavern 正式扩展（manifest + 前端模块）
 - 依赖：无第三方 npm 依赖
 
@@ -240,7 +240,7 @@ git clone https://github.com/fbsfyl/SillyTavern-FactLedger
   "kind": "currency",
   "quantity": 120,
   "unit": "枚",
-  "holder": "lin_yuan",
+  "holder": "user",
   "validTo": null
 }
 ```
@@ -270,8 +270,8 @@ git clone https://github.com/fbsfyl/SillyTavern-FactLedger
 | `set_item_quantity` | 精确设置数量（“只剩三颗”“正好 100 灵石”） |
 
 ```json
-{ "op": "clear_items", "character": "lin_yuan", "kinds": ["equipment", "consumable"], "reason": "被洗劫" }
-{ "op": "clear_currency", "character": "lin_yuan", "reason": "灵石被抢" }
+{ "op": "clear_items", "character": "user", "kinds": ["equipment", "consumable"], "reason": "被洗劫" }
+{ "op": "clear_currency", "character": "user", "reason": "灵石被抢" }
 { "op": "set_item_quantity", "item": "i_spirit", "quantity": 0, "reason": "被盗" }
 ```
 
@@ -389,8 +389,7 @@ NPC 自身的性别、境界、身份、关系、状态不做隔离，因此不�
 - 关系栏直接显示在场 NPC 的真实性别、境界与主角和其的关系；
 - 关系栏只读 `scene.participants` 中当前在场的 NPC，不在场的角色不显示；
 - NPC 的物品/关系不进入状态栏；
-- 点击面板标题折叠/展开；点「打开台账」打开完整面板；
-- 章节已彻底移除：旧数据加载时会把 `chapter` 映射为 `time`，然后删除 `chapter`。
+- 点击面板标题折叠/展开；点「打开台账」打开完整面板。
 
 ## 6. 更多文档
 
@@ -496,7 +495,7 @@ Featherless 的**模型容量不足**，语义上对应官方文档的 503（不
 - 秘密知情约束是「结构注入 + 提示约束 + 泄露检测」三层组合，不能保证模型 100% 不泄露。
 - 启发式泄露检测基于中文 2–4 字 n-gram，可能误报；以提取模型的 `leaks` 为准。
 - `narrator_only` / `faction` 已并入档位模型：前者等同主角级，后者不再单独支持。
-- 旧数据加载时会自动把 `chapter` 映射为 `time` 并删除 `chapter`；NPC 的当前物品会转为个人事实，`items` / `relations` 清空；NPC 自身信息上的 `visibility` / `knownBy` / `access` 会被清除（信息值保留）。
+- 0.15.0 起不再兼容旧数据：旧聊天里的台账可能为空或角色对不上，直接新开聊天。
 - 斜杠命令（`/factledger-status` 等）需要 SillyTavern 1.19+；面板按钮不受影响。
 - 台账保存在当前聊天的 `chatMetadata` 中，换聊天不会共享；跨聊天请用导出/导入。
 

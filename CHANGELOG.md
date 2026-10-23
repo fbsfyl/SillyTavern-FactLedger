@@ -3,6 +3,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
 
+## 0.15.4
+
+- 修复：面板标题、调试输出与斜杠命令里的版本号仍停在 0.14.2
+- 清理死代码：`by` / `actors` 不再参与角色解析（避免凭空建档）、`scene.chapter` 残留、`reveal` 的 `event` 校验、`event: false` 标记
+- 清理僵尸字段/参数：`meta.health` 写入、`valid_from`、`set_tier.tier` 别名、`secretHotWindow`、`accessChangedMessage`、`depth` 设置、`state.version`
+- 文档：删掉已不存在的迁移承诺；DESIGN 示例改为主角 `user`；状态栏不再隐藏 `objective`
+
 ## 0.15.3
 
 - 修复：被动被公开级目击者撞见时不再降档；`reveal` 到公开级目标必须显式写 `access:"public"`，避免「一个路人看见 = 全城知道」

@@ -48,7 +48,6 @@ function tierState() {
 
 test('createEmptyState 结构完整', () => {
     const state = createEmptyState();
-    assert.equal(state.version, 1);
     assert.deepEqual(state.characters, {});
     assert.equal(state.scene.time, '');
 });

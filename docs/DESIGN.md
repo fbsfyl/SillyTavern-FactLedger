@@ -9,9 +9,9 @@
 ```json
 {
   "characters": {
-    "lin_yuan": {
-      "id": "lin_yuan",
-      "name": "林远",
+    "user": {
+      "id": "user",
+      "name": "你",
       "aliases": ["林师兄"],
       "tier": "main",
       "access": "protagonist",
@@ -29,12 +29,11 @@
         "location": { "current": "青云宗·外门", "history": [] },
         "status": { "current": "左臂受伤", "history": [] },
         "fame": { "current": "外门新秀", "history": [] },
-        "objective": { "current": "夺回矿脉", "history": [] },
         "situation": { "current": "黑风寨余党在逃", "history": [] }
       },
       "items": [
-        { "id": "i_sword", "name": "青锋剑", "kind": "equipment", "quantity": 1, "unit": "", "holder": "lin_yuan", "validFrom": "第一日 晨", "validTo": null, "evidence": "msg:2" },
-        { "id": "i_spirit", "name": "灵石", "kind": "currency", "quantity": 120, "unit": "枚", "holder": "lin_yuan", "validFrom": "第一日 晨", "validTo": null, "evidence": "msg:3" }
+        { "id": "i_sword", "name": "青锋剑", "kind": "equipment", "quantity": 1, "unit": "", "holder": "user", "validFrom": "第一日 晨", "validTo": null, "evidence": "msg:2" },
+        { "id": "i_spirit", "name": "灵石", "kind": "currency", "quantity": 120, "unit": "枚", "holder": "user", "validFrom": "第一日 晨", "validTo": null, "evidence": "msg:3" }
       ],
       "skills": [
         { "id": "sk_qingmu", "name": "青木诀", "type": "technique", "level": "第三重", "validFrom": "第一日 晨", "validTo": null, "history": [] },
@@ -42,9 +41,6 @@
       ],
       "relations": [
         { "target": "su_wan", "targetName": "苏婉", "type": "同门", "attitude": "互相试探", "validFrom": "第一日 晨", "validTo": null }
-      ],
-      "facts": [
-        { "text": "左手有旧伤，阴雨天会疼", "validFrom": "第一日 晨", "validTo": null }
       ]
     },
     "su_wan": {
@@ -72,7 +68,7 @@
   "scene": {
     "time": "第三日 夜",
     "place": "黑风寨",
-    "participants": ["lin_yuan", "su_wan"]
+    "participants": ["user", "su_wan"]
   },
   "meta": {
     "lastProcessedMessage": 1,
@@ -220,13 +216,13 @@
 `reveal` 支持这些目标：
 
 ```json
-{ "op": "reveal", "fact": "f_orb", "to": "su_wan", "by": "lin_yuan", "method": "被看见" }
-{ "op": "reveal", "character": "lin_yuan", "field": "realm", "to": "su_wan", "by": "lin_yuan", "method": "战斗中暴露" }
-{ "op": "reveal", "character": "lin_yuan", "fact": "你私藏半块玉牌", "to": "su_wan", "by": "lin_yuan", "method": "当面拿出" }
-{ "op": "reveal", "item": "i_orb", "to": "su_wan", "by": "lin_yuan", "method": "被看见" }
-{ "op": "reveal", "relation": "su_wan", "to": "wang_shop", "by": "lin_yuan", "method": "被迫承认" }
-{ "op": "reveal", "skill": "sk_qingmu", "to": "su_wan", "by": "lin_yuan", "method": "当面运功" }
-{ "op": "reveal", "ability": "ab_feng", "to": "su_wan", "by": "lin_yuan", "method": "当众施展" }
+{ "op": "reveal", "fact": "f_orb", "to": "su_wan", "method": "被看见" }
+{ "op": "reveal", "character": "user", "field": "realm", "to": "su_wan", "method": "战斗中暴露" }
+{ "op": "reveal", "character": "user", "fact": "你私藏半块玉牌", "to": "su_wan", "method": "当面拿出" }
+{ "op": "reveal", "item": "i_orb", "to": "su_wan", "method": "被看见" }
+{ "op": "reveal", "relation": "su_wan", "to": "wang_shop", "method": "被迫承认" }
+{ "op": "reveal", "skill": "sk_qingmu", "to": "su_wan", "method": "当面运功" }
+{ "op": "reveal", "ability": "ab_feng", "to": "su_wan", "method": "当众施展" }
 ```
 
 - `reveal` 在正文明确写某人知道了时使用，把档位放宽到该人所在档；同档其他人也会知道。
@@ -240,19 +236,19 @@
 
 ```json
 {
-  "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["lin_yuan", "su_wan"] },
+  "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["user", "su_wan"] },
   "ops": [
-    { "op": "set", "character": "lin_yuan", "field": "realm", "value": "炼气七层", "validFrom": "第三日 夜", "evidence": "msg:87", "confidence": 0.9 },
-    { "op": "add_item", "character": "lin_yuan", "item": { "id": "i_sword", "name": "青锋剑" }, "validFrom": "第一日 晨", "evidence": "msg:2", "confidence": 0.9 },
-    { "op": "add_item", "character": "lin_yuan", "item": { "id": "i_spirit", "name": "灵石", "kind": "currency", "quantity": 120, "unit": "枚" }, "validFrom": "第一日 晨", "evidence": "msg:3", "confidence": 0.9 },
+    { "op": "set", "character": "user", "field": "realm", "value": "炼气七层", "validFrom": "第三日 夜", "evidence": "msg:87", "confidence": 0.9 },
+    { "op": "add_item", "character": "user", "item": { "id": "i_sword", "name": "青锋剑" }, "validFrom": "第一日 晨", "evidence": "msg:2", "confidence": 0.9 },
+    { "op": "add_item", "character": "user", "item": { "id": "i_spirit", "name": "灵石", "kind": "currency", "quantity": 120, "unit": "枚" }, "validFrom": "第一日 晨", "evidence": "msg:3", "confidence": 0.9 },
     { "op": "adjust_item", "item": "i_spirit", "delta": -30, "reason": "购买回气丹", "validFrom": "第三日 夜", "evidence": "msg:4", "confidence": 0.95 },
-    { "op": "add_skill", "character": "lin_yuan", "skill": { "id": "sk_qingmu", "name": "青木诀", "type": "technique", "level": "第三重" }, "validFrom": "第一日 晨", "evidence": "msg:5", "confidence": 0.9 },
-    { "op": "set_skill", "character": "lin_yuan", "skill": "sk_qingmu", "level": "第四重", "validFrom": "第四日 晨", "evidence": "msg:6", "confidence": 0.9 },
+    { "op": "add_skill", "character": "user", "skill": { "id": "sk_qingmu", "name": "青木诀", "type": "technique", "level": "第三重" }, "validFrom": "第一日 晨", "evidence": "msg:5", "confidence": 0.9 },
+    { "op": "set_skill", "character": "user", "skill": "sk_qingmu", "level": "第四重", "validFrom": "第四日 晨", "evidence": "msg:6", "confidence": 0.9 },
     { "op": "move_item", "item": "i_sword", "to": "su_wan", "validFrom": "第四日 晨", "evidence": "msg:90", "confidence": 0.9 },
-    { "op": "set_relation", "from": "lin_yuan", "to": "su_wan", "type": "同门", "attitude": "信任", "validFrom": "第五日 夜", "evidence": "msg:120", "confidence": 0.9 },
+    { "op": "set_relation", "from": "user", "to": "su_wan", "type": "同门", "attitude": "信任", "validFrom": "第五日 夜", "evidence": "msg:120", "confidence": 0.9 },
     { "op": "add_fact", "fact": { "id": "f_orb", "text": "林远持有混沌珠", "access": "protagonist" }, "evidence": "msg:10", "confidence": 0.9 },
-    { "op": "reveal", "fact": "f_orb", "to": "su_wan", "by": "lin_yuan", "method": "战斗中被迫使用", "validFrom": "第三日 夜", "evidence": "msg:92", "confidence": 0.95 },
-    { "op": "set_scene", "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["lin_yuan", "su_wan"] } }
+    { "op": "reveal", "fact": "f_orb", "to": "su_wan", "method": "战斗中被迫使用", "validFrom": "第三日 夜", "evidence": "msg:92", "confidence": 0.95 },
+    { "op": "set_scene", "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["user", "su_wan"] } }
   ],
   "leaks": [
     { "character": "su_wan", "fact": "混沌珠", "quote": "你手里那颗珠子……" }

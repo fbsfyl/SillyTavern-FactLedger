@@ -35,7 +35,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.14.2';
+const VERSION = '0.15.4';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -58,7 +58,6 @@ const DEFAULT_SETTINGS = {
     maxTokens: 4096,
     confidenceThreshold: 0.7,
     injectBudget: 3000,
-    depth: 0,
     knowledgeGate: true,
     leakCheck: true,
     showOthers: true,
@@ -640,7 +639,7 @@ async function settleLedger(options = {}) {
         }
         if (parsed.scene && typeof parsed.scene === 'object') {
             nextState.scene = {
-                time: parsed.scene.time || parsed.scene.chapter || nextState.scene.time || '',
+                time: parsed.scene.time || nextState.scene.time || '',
                 // 漏写 day 时沿用旧值，别让一次空字段把日期抹掉。
                 day: parsedDay ?? nextState.scene.day ?? null,
                 place: parsed.scene.place || nextState.scene.place || '',
@@ -706,7 +705,6 @@ async function settleLedger(options = {}) {
             messageIndex: lastIndex,
         }));
         nextState.meta.review = [...pendingReview, ...freshReview].slice(-50);
-        nextState.meta.health = healthCheck(nextState, { tokenBudget: settings.injectBudget });
 
         ctx.chatMetadata[MODULE_NAME] = nextState;
         saveState();
@@ -1338,7 +1336,7 @@ function getProtagonist() {
     if (settings.protagonistId && state.characters[settings.protagonistId]) {
         return state.characters[settings.protagonistId];
     }
-    return Object.values(state.characters).find((character) => character.tier === 'main') || null;
+    return state.characters[PROTAGONIST_ID] || null;
 }
 
 function stateValue(entry) {
@@ -1448,7 +1446,7 @@ function renderStatusBar() {
     }
     for (const field of orderedFields) {
         // progress 单独画进度条，不再作为一行文字重复出现。
-        if (field === 'location' || field === 'objective' || field === 'progress') continue;
+        if (field === 'location' || field === 'progress') continue;
         const entry = protagonist.state?.[field];
         const value = stateValue(entry);
         const meta = fieldMeta(field, entry, preset);
