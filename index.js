@@ -1,4 +1,4 @@
-import { getContext } from '../../../extensions.js';
+﻿import { getContext } from '../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../script.js';
 import {
     createEmptyState,
@@ -38,7 +38,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.13.4';
+const VERSION = '0.13.5';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -1704,6 +1704,10 @@ function leakRevealTarget(state, leak) {
     if (target.skill) return { skill: target.skill, label: target.skill };
     if (target.ability) return { ability: target.ability, label: target.ability };
     if (target.relation) return { relation: target.relation, label: `关系 ${target.relation}` };
+    if (target.character && target.fact) {
+        const name = state.characters?.[target.character]?.name || target.character;
+        return { character: target.character, fact: target.fact, label: `${name}：${target.fact}` };
+    }
     if (target.character && target.field) {
         const name = state.characters?.[target.character]?.name || target.character;
         return { character: target.character, field: target.field, label: `${name}.${target.field}` };
@@ -1732,7 +1736,8 @@ function acknowledgeLeak(index) {
         ...(target.skill ? { skill: target.skill } : {}),
         ...(target.ability ? { ability: target.ability } : {}),
         ...(target.relation ? { relation: target.relation } : {}),
-        ...(target.character ? { character: target.character, field: target.field } : {}),
+        ...(target.character && target.field ? { character: target.character, field: target.field } : {}),
+        ...(target.character && target.fact ? { character: target.character, fact: target.fact } : {}),
         evidence: 'msg:0',
         confidence: 1,
     };

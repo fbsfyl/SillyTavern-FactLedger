@@ -2992,3 +2992,68 @@ test('泄露检测覆盖物品、功法与字段，且没有在场记录时扫�
     assert.ok(automatic.some((leak) => leak.character === 'su'));
     assert.ok(automatic.every((leak) => leak.character !== 'user'));
 });
+
+test('称呼类目击者能唯一匹配到已有角色', () => {
+    const state = tierState();
+    state.characters.zhao = {
+        id: 'zhao', name: '赵长老', tier: 'major', access: 'friend',
+        state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
+    };
+    const result = run(state, [
+        {
+            op: 'add_fact',
+            fact: { id: 'f1', text: '你在后山见了赵长老', witnesses: ['长老'] },
+            evidence: 'msg:0',
+            confidence: 0.9,
+        },
+    ]);
+    assert.equal(entityAccess(result.state.facts.f1), 'friend');
+    assert.ok(knowsEntity(result.state.facts.f1, 'zhao', result.state));
+});
+
+test('称呼类目击者有歧义时回落主角级，不乱放宽', () => {
+    const state = tierState();
+    for (const [id, name] of [['zhao', '赵长老'], ['li', '李长老']]) {
+        state.characters[id] = {
+            id, name, tier: 'major', access: 'friend',
+            state: {}, items: [], relations: [], facts: [], skills: [], abilities: [],
+        };
+    }
+    const result = run(state, [
+        {
+            op: 'add_fact',
+            fact: { id: 'f1', text: '你夜里进了藏经阁', witnesses: ['长老'] },
+            evidence: 'msg:0',
+            confidence: 0.9,
+        },
+    ]);
+    assert.equal(entityAccess(result.state.facts.f1), 'protagonist');
+});
+
+test('角色个人事实参与泄露检测，并可用 reveal 放宽', () => {
+    const state = tierState();
+    state.characters.user.facts.push({ text: '你私藏半块玉牌', access: 'protagonist' });
+    const leaks = detectLeaks(state, '王掌柜盯着你：“那半块玉牌呢？”', ['wang']);
+    assert.ok(leaks.some((leak) => (
+        leak.target?.character === 'user' && leak.target?.fact === '你私藏半块玉牌'
+    )));
+
+    const result = run(state, [
+        {
+            op: 'reveal',
+            character: 'user',
+            fact: '你私藏半块玉牌',
+            to: 'wang',
+            method: '当面拿出',
+            evidence: 'msg:0',
+            confidence: 0.9,
+        },
+    ]);
+    const entry = result.state.characters.user.facts.find((item) => item.text === '你私藏半块玉牌');
+    assert.equal(entityAccess(entry), 'public');
+});
+
+test('拜师与易主算大事信号', () => {
+    assert.match(detectMissingMajorEvent([{ mes: '他当场拜师，行了大礼。' }], []), /拜师/);
+    assert.match(detectMissingMajorEvent([{ mes: '令牌易主。' }], []), /易主/);
+});

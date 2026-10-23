@@ -1,11 +1,15 @@
 # Fact Ledger（事实台账）
 
+[![release](https://img.shields.io/github/v/release/fbsfyl/SillyTavern-FactLedger?label=release)](https://github.com/fbsfyl/SillyTavern-FactLedger/releases)
+[![license](https://img.shields.io/github/license/fbsfyl/SillyTavern-FactLedger)](LICENSE)
+[![tests](https://img.shields.io/badge/tests-169-brightgreen)](TEST_REPORT.md)
+[![SillyTavern](https://img.shields.io/badge/SillyTavern-1.19%2B-5b4ee6)](https://github.com/SillyTavern/SillyTavern)
+
 面向 SillyTavern 文字冒险 / 角色扮演的结构化记忆扩展：**角色状态台账 + 事件台账 + 双时态历史 + 秘密知情约束**。
 
-- 版本：`0.13.4`
+- 版本：`0.13.5`
 - 类型：SillyTavern 正式扩展（manifest + 前端模块）
 - 依赖：无第三方 npm 依赖
-- 测试：165 个纯逻辑单元测试全部通过；跨记忆窗口、增量结算、物品转手已用真实 API 验证
 
 ---
 
@@ -117,11 +121,17 @@ SillyTavern-FactLedger/
 ├── index.js               # ST 集成：UI、事件、提取调用、注入
 ├── settings.html          # 设置面板
 ├── style.css              # 面板与设置样式
-├── package.json           # 仅用于 Node 单元测试（type: module）
 ├── lib/
-│   └── ledger.js          # 纯逻辑：双时态/认知/事件/注入/泄露/健康检查
+│   ├── ledger.js          # 纯逻辑：双时态/认知/事件/注入/泄露/健康检查
+│   └── genres.js          # 题材预设
 ├── test/
-│   └── ledger.test.mjs    # 165 个单元测试
+│   └── ledger.test.mjs    # 169 个单元测试
+├── docs/
+│   └── DESIGN.md          # 数据模型 / 提取协议 / 注入装配
+├── CHANGELOG.md
+├── KNOWN_RISKS.md
+├── TEST_PLAN.md / TEST_REPORT.md
+├── LICENSE
 ├── README.md
 └── requirements.md
 ```
@@ -371,349 +381,20 @@ NPC 自身的性别、境界、身份、关系、状态不做隔离，因此不�
 - 点击面板标题折叠/展开；点「打开台账」打开完整面板；
 - 章节已彻底移除：旧数据加载时会把 `chapter` 映射为 `time`，然后删除 `chapter`。
 
-## 6. 数据模型
+## 6. 更多文档
 
-```json
-{
-  "characters": {
-    "lin_yuan": {
-      "id": "lin_yuan",
-      "name": "林远",
-      "aliases": ["林师兄"],
-      "tier": "main",
-      "access": "protagonist",
-      "state": {
-        "realm": {
-          "current": "炼气七层",
-          "history": [
-            { "value": "炼气六层", "validFrom": "第一日 晨", "validTo": "第三日 夜", "evidence": "msg:1", "confidence": 0.95 },
-            { "value": "炼气七层", "validFrom": "第三日 夜", "validTo": null, "evidence": "msg:87", "confidence": 0.9 }
-          ]
-        },
-        "gender": { "current": "男", "history": [] },
-        "appearance": { "current": "清瘦，左手有旧伤", "history": [] },
-        "technique": { "current": "《青木诀》第三重", "history": [] },
-        "location": { "current": "青云宗·外门", "history": [] },
-        "status": { "current": "左臂受伤", "history": [] },
-        "fame": { "current": "外门新秀", "history": [] },
-        "objective": { "current": "夺回矿脉", "history": [] },
-        "situation": { "current": "黑风寨余党在逃", "history": [] }
-      },
-      "items": [
-        { "id": "i_sword", "name": "青锋剑", "kind": "equipment", "quantity": 1, "unit": "", "holder": "lin_yuan", "validFrom": "第一日 晨", "validTo": null, "evidence": "msg:2" },
-        { "id": "i_spirit", "name": "灵石", "kind": "currency", "quantity": 120, "unit": "枚", "holder": "lin_yuan", "validFrom": "第一日 晨", "validTo": null, "evidence": "msg:3" }
-      ],
-      "skills": [
-        { "id": "sk_qingmu", "name": "青木诀", "type": "technique", "level": "第三重", "validFrom": "第一日 晨", "validTo": null, "history": [] },
-        { "id": "sk_sword", "name": "御剑术", "type": "skill", "level": "入门", "validFrom": "第三日 夜", "validTo": null, "history": [] }
-      ],
-      "relations": [
-        { "target": "su_wan", "targetName": "苏婉", "type": "同门", "attitude": "互相试探", "validFrom": "第一日 晨", "validTo": null }
-      ],
-      "facts": [
-        { "text": "左手有旧伤，阴雨天会疼", "validFrom": "第一日 晨", "validTo": null }
-      ]
-    },
-    "su_wan": {
-      "id": "su_wan",
-      "name": "苏婉",
-      "tier": "major",
-      "access": "friend",
-      "state": { "gender": { "current": "女", "history": [] } },
-      "items": [],
-      "skills": [],
-      "relations": [],
-      "facts": []
-    }
-  },
-  "facts": {
-    "f_orb": {
-      "id": "f_orb",
-      "text": "林远持有混沌珠",
-      "access": "intimate",
-      "beliefs": {
-        "wang_shop": { "state": "suspects", "suspicion": "袖中藏着值钱东西" }
-      }
-    }
-  },
-  "events": [
-    {
-      "id": "e0001",
-      "time": "第三日 夜",
-      "place": "黑风寨",
-      "actors": ["lin_yuan", "su_wan"],
-      "problem": "灵石矿脉被劫",
-      "decision": "夜袭",
-      "result": "夺回矿脉，苏婉重伤",
-      "stateChanges": ["lin_yuan.items += 青锋剑", "su_wan.status = 重伤"],
-      "importance": "major",
-      "sourceMessages": [41, 42]
-    }
-  ],
-  "scene": {
-    "time": "第三日 夜",
-    "place": "黑风寨",
-    "participants": ["lin_yuan", "su_wan"]
-  },
-  "meta": {
-    "lastProcessedMessage": 1,
-    "messagesSinceSettle": 0,
-    "lastSettleAt": null,
-    "lastError": "",
-    "leaks": [],
-    "health": []
-  }
-}
-```
-
-### 角色从哪里来
-
-台账**不读取角色卡的人物设定**，所有角色都来自开场白、用户消息和 AI 回复：
-
-- 主角：固定 id `user`，显示名「你」。提取提示词要求 `protagonist` 固定输出 `user`；旁白里的「你」、用户消息里的「我」、`玩家/主角/persona 名` 在落账前统一归一化为 `user`，不会分裂成多个角色。
-- 主角不需要名字：卡片提示词要求旁白用第二人称「你」，NPC 追问姓名时由玩家自己回答，台账不编造名字。
-- 在场角色：`set_scene` 的参与者会自动建立记录（只有名字），字段缺失时状态栏显示「未知」，后续被旁白提到再补。
-- 性别：只允许 `男` / `女` / `未知`。姑娘、公子、师兄、师姐这类明确称谓可用于推断；只有姓氏+职位（如苏掌柜）时记为未知，禁止凭名字用字猜。
-- 境界、宗门、状态、功法：只在旁白或对话明确说明时记录，不编造。
-
-### 角色身份：稳定 ID
-
-`characters` 的键是**不随剧情变化的不透明 ID**，姓名只是显示数据：
-
-- 主角固定 `user`；其他角色用 `npc_001`、`npc_002`……按出现顺序分配。手写的英文键（如 `lin_yuan`）保持原样。
-- `name` 是显示名，`aliases` 存旧名和称呼。旁白、知情名单、关系、事件参与人里写的名字，落库前统一解析成 ID。
-- 「执事」后来报出姓名，只改 `name`，不新建档案；问出名字前用的临时名（如「白玉广场执事甲」）留在 `aliases` 里。
-- 无名角色不共用档案：同一职位出现在不同地点，就是不同的 `npc_xxx`，知情也不互通。
-- 认错了要合并：`merge_character {from, to}`；只是改名：`rename_character {from, to}`（主角不可改名）。
-- 旧台账（用姓名作键）加载时自动迁移，同时改写版本日志里的 op，避免回放把改名冲掉；迁移是幂等的。
-
-### 双时态规则
-
-- 状态变化时，旧记录填 `validTo`，新记录 `validTo = null`；
-- 当前值 = `validTo` 为空的最新记录；
-- 历史值只用于追溯，不覆盖当前值。
-
-### 知情档位
-
-隔离不再按「具体谁」记，而是按**关系档位**：
-
-| 档位 | 谁够格知道 |
-|---|---|
-| `protagonist` | 只有主角 |
-| `intimate` | 道侣、挚友、生死之交，以及主角 |
-| `friend` | 同门、熟识、长期合作，以及更高档位 |
-| `public` | 人人皆知，没有隔离 |
-
-- 角色有 `access`，条目也有 `access`；**角色档位 ≥ 条目档位 = 默认知情**。
-- 主角固定 `protagonist`，永远知道；NPC 默认 `public`。
-- **条目按剧情定档，不按类型一刀切**：
-  1. 当众发生、公开场合、旁人能看到 → `public`；
-  2. 没人看见或刻意隐藏 → `protagonist`；
-  3. 有目击者 → 取目击者中与主角关系最疏远的那一档（有公开级目击者就是 `public`）；
-  4. 拿不准 → `protagonist`。
-- 事件用 `witnesses` 写真正看到/听到的人（不写就按 `actors` 算），顶层事实也可以写 `witnesses`。显式 `access` 若把目击者排除在外，代码会放宽到最疏远目击者的档位。
-- **正文明确优先，正文沉默时按台账**：
-  - 正文明确写某人不知道 / 被瞒着 → 当前正文按不知道；台账不改档位（档位级不记个人例外）。
-  - 正文明确写某人知道 → 当前正文按知道；只有扩散到某个范围时，才用 `reveal` 放宽档位。
-  - 正文没提 → 按档位：够格的默认知情，不够格的默认不知情。
-- 两个典型错误由档位兜住：
-  1. 旧事离开上下文后，叙事者没看到，把知情的 NPC 写成不知道；
-  2. 正文没说某个不知情 NPC 不知道，就顺口让他知道。
-  在场、看到、沉默都不等于知情。
-- `reveal` 把条目档位放宽到目标所在档（目标公开级就是公开级）。正文明确写某人知道了就用它；同档其他人也会知道，这是档位级的近似。
-- **只告诉一个人会按该人档位记录**：同档其他人也会知道；不引入个人级 `knownBy`。这是有意接受的精度代价。
-- 承诺保密不改变谁知道，只约束「会不会传出去」。
-- 关系降级按「直接遗忘」处理；升级则自动获得该档旧秘密的默认知情。
-
-#### 关系档位变化标准
-
-档位是**该 NPC 与主角的关系**，不是 NPC 之间的关系。`set_tier` 必须写 `reason`，只接受下表理由：
-
-| 变化 | 允许理由 |
-|---|---|
-| `public → friend` | 正式结交 / 同门名分 / 多次互助 |
-| `friend → intimate` | 结拜 / 道侣 / 共同生死 / 长期共处 |
-| `public → intimate` | 只允许结拜 / 道侣 / 共同生死 |
-| `intimate → friend` | 决裂 / 背叛 / 明确疏远 |
-| `friend → public` | 决裂 / 背叛 / 长期无往来 |
-
-防漂移：
-
-- 分歧、吵架、语气变差**不降档**，只改 `relation.attitude`；
-- 同一次结算每个角色最多改一档；
-- 反向改动需间隔 3 个故事日，里程碑（结拜/道侣/共同生死/决裂/背叛）可越过；
-- 「长期无往来」需至少 30 个故事日，且期间没有同场记录；
-- 同档 `set_tier` 是空操作，不写历史。
-
-### 猜疑与误信
-
-档位只表达「够不够格知道」。个别角色的怀疑、错误认知单独存在 `beliefs` 里，不影响档位：
-
-| 状态 | 含义 |
-|---|---|
-| `suspects` | 怀疑，必须带依据；可以试探但不能说破 |
-| `false_belief` | 错误认知；可以笃定地说错话 |
-
-```json
-"facts": {
-  "f_orb": {
-    "text": "林远持有混沌珠",
-    "access": "protagonist",
-    "beliefs": {
-      "wang_shop": { "state": "false_belief", "belief": "林远只是个没背景的外门弟子" }
-    }
-  }
-}
-```
-
-可带 `access` 的实体：
-
-- `characters[主角].state[field]`（隐藏修为等）
-- `characters[主角].items[]`（暗藏法宝）
-- `characters[主角].relations[]`（秘密同盟）
-- `characters[主角].skills[]` / `abilities[]`（隐藏功法、底牌神通）
-- `characters[主角].facts[]`（主角的个人秘密）
-- `facts{}`（顶层事实）
-- `events[]`（`witnesses` 记真正看到的人，并据此定档；`access` 记可引用范围）
-
-示例：
-
-```json
-{
-  "state": {
-    "realm": { "current": "筑基一层", "access": "protagonist", "history": [] }
-  },
-  "items": [
-    { "id": "i_orb", "name": "混沌珠", "access": "intimate" }
-  ],
-  "relations": [
-    { "target": "su_wan", "type": "秘密同盟", "access": "intimate" }
-  ],
-  "events": [
-    { "id": "e0001", "problem": "秘密行动", "result": "成功", "witnesses": ["lin_yuan"], "access": "friend" }
-  ]
-}
-```
-
-行为：
-
-- 受限字段/物品/关系/个人事实**不进入公开角色块**，只出现在【秘密知情】里；
-- 【秘密知情】每条写 `档位；默认知情=…；默认不知情=…`，主角级写「只有你知道」；
-- 事件行会追加 `[K:...]`，只有够格的人可以引用；
-- 未写 `access` 时：事件和顶层事实按目击者定档（最疏远的目击者；没有目击者才回落 `public` / `protagonist`）；字段/物品/关系/技能按 `public`。
-- `reveal` 把条目档位放宽到 `to` 所在档；同档其他人也会知道。
-
-`reveal` 支持六种目标：
-
-```json
-{ "op": "reveal", "character": "lin_yuan", "field": "realm", "to": "su_wan", "by": "lin_yuan", "method": "战斗中暴露" }
-{ "op": "reveal", "item": "i_orb", "to": "su_wan", "by": "lin_yuan", "method": "被看见" }
-{ "op": "reveal", "relation": "su_wan", "to": "wang_shop", "by": "lin_yuan", "method": "被迫承认" }
-{ "op": "reveal", "skill": "sk_qingmu", "to": "su_wan", "by": "lin_yuan", "method": "当面运功" }
-{ "op": "reveal", "ability": "ab_feng", "to": "su_wan", "by": "lin_yuan", "method": "当众施展" }
-{ "op": "reveal", "event": "e0001", "to": "su_wan", "by": "lin_yuan", "method": "事后得知" }
-```
-
-- `reveal` 在正文明确写某人知道了时使用，把档位放宽到该人所在档；同档其他人也会知道。
-- 每次成功的 `reveal` 都会在状态栏和 toastr 弹提醒，不会静默改知情。
+- [设计细节](docs/DESIGN.md)：数据模型、提取输出（ops）、注入装配
+- [更新日志](CHANGELOG.md)
+- [测试计划](TEST_PLAN.md)、[测试报告](TEST_REPORT.md)
+- [已知风险](KNOWN_RISKS.md)、[环境要求](requirements.md)
 
 ---
 
-## 7. 提取输出（ops）
-
-提取模型只输出 JSON：
-
-```json
-{
-  "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["lin_yuan", "su_wan"] },
-  "ops": [
-    { "op": "set", "character": "lin_yuan", "field": "realm", "value": "炼气七层", "validFrom": "第三日 夜", "evidence": "msg:87", "confidence": 0.9 },
-    { "op": "add_item", "character": "lin_yuan", "item": { "id": "i_sword", "name": "青锋剑" }, "validFrom": "第一日 晨", "evidence": "msg:2", "confidence": 0.9 },
-    { "op": "add_item", "character": "lin_yuan", "item": { "id": "i_spirit", "name": "灵石", "kind": "currency", "quantity": 120, "unit": "枚" }, "validFrom": "第一日 晨", "evidence": "msg:3", "confidence": 0.9 },
-    { "op": "adjust_item", "item": "i_spirit", "delta": -30, "reason": "购买回气丹", "validFrom": "第三日 夜", "evidence": "msg:4", "confidence": 0.95 },
-    { "op": "add_skill", "character": "lin_yuan", "skill": { "id": "sk_qingmu", "name": "青木诀", "type": "technique", "level": "第三重" }, "validFrom": "第一日 晨", "evidence": "msg:5", "confidence": 0.9 },
-    { "op": "set_skill", "character": "lin_yuan", "skill": "sk_qingmu", "level": "第四重", "validFrom": "第四日 晨", "evidence": "msg:6", "confidence": 0.9 },
-    { "op": "move_item", "item": "i_sword", "to": "su_wan", "validFrom": "第四日 晨", "evidence": "msg:90", "confidence": 0.9 },
-    { "op": "set_relation", "from": "lin_yuan", "to": "su_wan", "type": "同门", "attitude": "信任", "validFrom": "第五日 夜", "evidence": "msg:120", "confidence": 0.9 },
-    { "op": "append_event", "event": { "time": "第三日 夜", "place": "黑风寨", "problem": "矿脉被劫", "decision": "夜袭", "result": "夺回", "importance": "major", "sourceMessages": [41] } },
-    { "op": "add_fact", "fact": { "id": "f_orb", "text": "林远持有混沌珠", "access": "protagonist" }, "evidence": "msg:10", "confidence": 0.9 },
-    { "op": "reveal", "fact": "f_orb", "to": "su_wan", "by": "lin_yuan", "method": "战斗中被迫使用", "validFrom": "第三日 夜", "evidence": "msg:92", "confidence": 0.95 },
-    { "op": "set_scene", "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["lin_yuan", "su_wan"] } }
-  ],
-  "leaks": [
-    { "character": "su_wan", "fact": "混沌珠", "quote": "你手里那颗珠子……" }
-  ]
-}
-```
-
-规则层会校验：
-
-- 每个 op 必须有 `evidence` 与 `confidence`；
-- `evidence: msg:N` 必须在当前消息范围内；
-- `confidence < 0.5` 拒绝，`0.5–0.7` 待复核，`≥0.7` 应用；
-- 未知 op、缺字段直接拒绝。
-
-### 增量结算与版本日志
-
-- 台账用 `meta.lastProcessedMessage` 记录上次结算到哪条消息；
-- 每次只取它之后的新消息，再额外带前 3 条作上下文；
-- 上下文消息在提取提示里标记 `[context]`，模型不得为它们生成 op；
-- 重复事件按「时间｜地点｜参与人｜问题｜决策｜结果」去重；
-- 首次结算最多回看 20 条，避免一次性把整段聊天灌进去。
-
-每次结算还会向 `meta.history` 追加一条记录：
-
-```json
-{ "to": 42, "prefixHash": "a3f1…", "ops": [...], "scene": {...} }
-```
-
-`prefixHash` 是前 42 条消息的滚动哈希。编辑、删除、swipe、分支、检查点都会改变某个位置之后的前缀哈希。
-
-打开聊天或检测到消息变动时：
-
-1. 重算当前聊天的前缀哈希；
-2. 找到最后一个仍然匹配的日志记录 `to = k`；
-3. 从空台账回放日志到 `k`，丢弃之后的记录；
-4. `lastProcessedMessage = k`，下次只重抽 `k+1` 之后。
-
-酒馆的分支/检查点会复制当前 `chat_metadata`，所以版本日志会自动带到新聊天；新聊天长度就是分叉点，不需要手动操作插件。
-
-`meta.history` 只保存在聊天 metadata 和导出 JSON 中，**不会进入提取提示**；健康页会显示日志条数与体积。
-
----
-
-## 8. 注入装配
-
-注入的 system 块由两部分组成：先放插件侧的叙事规则（台账与知情约束，来自设置或题材预设，独立于角色卡），再放台账。台账部分如下：
-
-1. **规则头**：台账是玩家已知事实；`[K:]` / `access` 只约束 NPC；
-2. **场景**：时间、地点、在场角色；
-3. **角色**：主角 + 在场角色全量按真相渲染；其他角色一行；
-4. **事件台账**：最近 N 条 + 全部 `major`，带 `[K:姓名]`；
-5. **秘密知情**：每条秘密一行，列出「知情 / 不知情 / 怀疑 / 错误认知」。
-
-`【秘密知情】` 示例：
-
-```text
-- 林远持有混沌珠 ｜ 知情=林远；不知情=苏婉；王掌柜误以为「林远只是个没背景的外门弟子」
-```
-
-这样比“按角色列认知”短得多，而且“谁不知道”一眼可见。
-
-超出 token 预算时按以下顺序裁剪：
-
-```
-其他角色 → 旧事件 → 认知详情 → 非主角角色块
-```
-
----
-
-## 9. 测试
+## 7. 测试
 
 纯逻辑单元测试不需要 SillyTavern：
 
 ```powershell
-cd "c:\Users\Administrator\Desktop\trae projects\tavern\SillyTavern-FactLedger"
 node --test test/ledger.test.mjs
 ```
 
@@ -735,7 +416,7 @@ node --test test/ledger.test.mjs
 
 ---
 
-## 10. 排错
+## 8. 排错
 
 ### `... is temporarily at capacity. Please try again shortly.`
 
@@ -798,7 +479,7 @@ Featherless 的**模型容量不足**，语义上对应官方文档的 503（不
 
 ---
 
-## 11. 已知限制
+## 9. 已知限制
 
 - 提取质量依赖所选模型；JSON 遵循度差的模型会频繁被规则层拒绝。
 - 9B 级提取模型在 20 条以上对话中会漏记秘密对象或生成大量噪声，实测建议使用 27B 级（如 Queen）。
@@ -811,7 +492,7 @@ Featherless 的**模型容量不足**，语义上对应官方文档的 503（不
 
 ---
 
-## 12. 隐私与数据
+## 10. 隐私与数据
 
 - 台账只保存在本地 SillyTavern 的聊天 metadata 与导出的 JSON 中；
 - 提取调用会把「最近对话 + 当前台账」发送给你选择的 API（如 Featherless）；
@@ -820,215 +501,7 @@ Featherless 的**模型容量不足**，语义上对应官方文档的 503（不
 
 ---
 
-## 13. 版本记录
+## 11. 版本记录
 
-### 0.13.4
+完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-- 新增：条目超过角色块上限时，本轮正文提到的物品/关系/功法/神通/事实优先保留，不再只显示「另有 N 项」
-- 新增：低置信（0.5–0.7）op 存入「待复核」，面板可以逐条采纳或忽略
-- 新增：泄露检测覆盖物品、功法、神通、关系与主角字段，不再只扫顶层事实
-- 修复：手动「设为已知」支持物品/功法/神通/关系/字段，并统一写入版本日志
-- 修复：没有在场记录时泄露检查扫全部 NPC，不再只命中玩家
-- 清理：`validateOp` 里不可达的重复 `set_tier` 分支
-- 165 个单元测试
-
-### 0.13.3
-
-- 修复：事件与未了结条目上的怀疑/误信现在会注入，不再只渲染顶层秘密
-- 修复：手动「按泄露处理」失败时保留泄露记录并提示原因，不再静默删除
-- 修复：NPC 的 `tier:"main"` 降级时保留原有档位；没有 `user` 且出现多个 `main` 时不再有人拿到主角级
-- 163 个单元测试
-
-### 0.13.2
-
-- 修复：回放改为按 `history.characters` 快照建角色，不再提前 `set_scene`，避免角色 id 串档
-- 修复：有 `user` 时，旧数据里 NPC 的 `tier:"main"` 自动降级，不再获得主角级
-- 修复：`reveal` 目标写错名字时拒绝，不再新建公开级角色放宽秘密
-- 修复：关闭知情约束时保留 `beliefs`/怀疑，并去掉 `progress`、事件、未了结的 `[K:]` 标注
-- 修复：面板「按泄露处理」写入版本日志，回放不再丢失这次扩散
-- 修复：中文身份字段名（灵根/体质/身世等）走同一写保护
-- 158 个单元测试
-
-### 0.13.1
-
-- 修复：关闭「秘密知情约束」不再删除主角秘密内容，只去掉知情标注
-- 修复：回放先把 `set_scene` 提到最前，避免已解析 id 造出幽灵角色
-- 修复：「主角」下拉框不能再把 NPC 设为主角
-- 修复：`reveal` 只记怀疑/误信时不再写公开泄露事件；只有真正改档才提醒
-- 修复：0.5–0.7 只进待复核，不再直接落账
-- 修复：顶层 `scene` 也写 `lastSeenDay`
-- 修复：`reveal` 忽略显式 `access`/`tier`，只放宽到目标所在档
-- 修复：玩家灵根/体质/身世等身份字段只允许首次记录，不能覆盖
-- 154 个单元测试
-
-### 0.13.0
-
-- 知情规则明确为**正文明确优先，正文沉默时按台账**：正文写明谁知道/不知道就按正文；没写时档位是防线，防止把不知情 NPC 写成知道，也防止旧事超出上下文后把知情 NPC 写成不知道
-- 保持档位级：不引入个人级 `knownBy`；只告诉一个人会按该人档位记录，同档一起知情
-- `reveal` 仍把档位放宽到目标所在档；同档一起知情（档位级近似）
-- 每次成功的 `reveal` 在状态栏和 toastr 提醒，不再静默改知情
-- 目击者定档、关系档位白名单与防漂移保留
-- 148 个单元测试
-
-### 0.12.2
-
-- 顶层事实与事件改为按剧情定档：目击者中最疏远的一档决定范围；没有目击者才回落类型默认
-- 显式档位排除目击者时自动放宽；重复事件合并目击者并重算档位
-- `set_tier` 必须写 `reason`，用白名单限制升降档；分歧、吵架不降档
-- 同一次结算每个角色最多改一档；反向改动冷却 3 故事日；长期无往来需 30 故事日
-- 场景更新记录最近同场日；提取台账显示上次改档理由与日期
-- 148 个单元测试
-
-### 0.12.1
-
-- 提示词效率：提取提示去重（角色/档位/自检），删除未使用的 `witnesses` 教学与重复规则
-- 提取台账投影瘦身：不再发送 `createdAt` / `sourceMessages` / `witnesses` / `stateChanges` 与角色的 `name` / `tier`
-- 修正：主角灵根/体质/身世默认档位与代码一致（`public`）；秘密改 `public` 需正文明确当众公开，并记一条 major 泄露事件
-- 修正：普通事件超 2 条必须合并，不能标 `major` 绕过配额；修仙进度不再写「重置到 0-10」
-- 修正：示例 JSON 统一苏绾、去掉空 `place` 与拼音 `id`
-- 注入头与 `narrativeRules` 去重；实测每回合叙事提示约省 12%，每次提取约省 10%
-- 138 个单元测试
-
-### 0.12.0
-
-- 知情精度从「具体谁」改为「关系档位」：主角级 / 亲密级 / 朋友级 / 公开级
-- 角色新增 `access`，条目改用 `access`；`knownBy` 退出数据模型
-- 新增 `set_tier` op；`reveal` 改为放宽档位（同档角色一并知情）
-- 主角级秘密在【秘密知情】里写作「只有你知道」，避免读成「没人知道」
-- 怀疑与误信改存 `beliefs`，不再参与档位判定
-- 面板「编辑知情者」改为「编辑档位」；关系栏与认知页显示档位
-- 场景参与者不再参与隔离：路人（公开级）不需要准确认人
-- 档位改为「默认知情范围」：剧情只能收紧不能扩张；`reveal` 只用于秘密真正被揭开
-- `reveal` 支持用物品/功法/神通的名字定位，不再只认 id
-- 提取提示里的角色键、参与者、目击者和 beliefs 全部改用姓名，内部 id 不再暴露给模型
-- 修复扁平 `append_event` 的 actors/witnesses/beliefs 不归一化；修复改名后关系里的旧名
-- `reveal` 找不到条目时拒绝，不再凭空造事实；`move_item` 找不到物品时拒绝
-- 事件 `[K:]` 只看档位，目击者不再绕过档位；重复事件合并保留更保密的档位与 beliefs
-- 非法档位按主角级处理；预算极紧时按整段裁剪，秘密块最后才丢
-- 删除 `knownBy` 时代的死代码与改写分支
-- 138 个单元测试
-
-### 0.11.0
-
-- 角色改用稳定 ID（`user` + `npc_001`）：姓名、称呼只是显示数据，改名不再新建档案
-- 新增 `rename_character` / `merge_character`，认错人或只见职位不见姓名时可手动纠正
-- 旧台账（姓名作键）加载时自动迁移，并同步改写版本日志里的 op，回放不会冲掉改名
-- 提取提示新增角色身份规则：无名角色用「地点+职位+序号」临时名，纯职位不单独建档
-- 修复 `stateChanges` 写成对象时被存成 `[object Object]`；已污染的旧数据加载时清除
-- 修复切换聊天或刷新页面回放台账后，只在场景里出现的角色档案丢失、关系栏显示 `npc_001｜未知｜未知`；场景现在也会写进版本日志，回放按姓名重建
-- 126 个单元测试
-
-### 0.10.0
-
-- 新增「每回合注入叙事规则」：插件侧规则随题材预设内置，与角色卡的叙述规则分离
-- 修仙预设内置插件侧规则（319 字）：台账、知情、旧事、未了结；首次安装自动填入
-- 新增「恢复题材默认规则」
-- 规则可独立于台账开关注入；台账关闭时仍可只发规则
-- 注入位置改为系统提示层，与主 system prompt 合并，兼容只接受首条 system 的模型
-- 118 个单元测试
-
-### 0.9.2
-
-- 新增斜杠命令：`/factledger-status`、`/factledger-history`、`/factledger-settle`、`/factledger-replay`
-- 新增调试弹窗：只读 JSON，可选中复制；剪贴板失败时自动打开
-- 控制台暴露 `FactLedger.debug()`、`FactLedger.showDebug()`、`FactLedger.history()`
-- 49 个单元测试
-
-### 0.9.1
-
-- 健康页新增「复制调试信息」按钮：复制聊天长度、回放点、版本日志、错误和设置的紧凑 JSON
-- 修复数字输入框在深色主题下白底浅字、几乎不可见的问题
-- 49 个单元测试
-
-### 0.9.0
-
-- 新增版本日志 `meta.history`：每次结算记录 `to / prefixHash / ops / scene`
-- 编辑、删除、swipe、分支、检查点时按前缀哈希自动回放台账，支持回到任意早期消息
-- 分支/检查点通过酒馆的 metadata 复制自动带上日志，无需手动操作
-- 提取提示剔除 `meta`，版本日志不会进入模型上下文
-- 健康页显示版本日志条数与体积
-- 49 个单元测试
-
-### 0.8.0
-
-- 注入精简：规则头 5 行 → 3 行；事件参与人与 `[K:]` 去重；`[K:]` 改用姓名
-- 用「每条秘密一行」的 `【秘密知情】` 替代「按角色列认知」，注入从 643 → 419 tokens
-- 编辑/删除/swipe 会把结算锚点回退；分支/回滚用 `lastProcessedHash` 检测并重算最近 20 条
-- 提取提示补充 `move_item`：物品转手不要先删再建
-- 46 个单元测试
-
-### 0.7.0
-
-- 自动结算改为每收到一条 AI 回复触发一次
-- 增量提取：只取 `lastProcessedMessage` 之后的新消息，额外带前 3 条上下文
-- 上下文消息标记 `[context]`，模型不得为它们生成 op
-- `append_event` 按事件签名去重，避免重复记账
-- 45 个单元测试
-
-### 0.6.2
-
-- 提取请求附加 `response_format: json_object`，服务端不支持时自动回退重试
-- 重复 `add_fact` 合并新知情者，不再忽略后续 reveal
-- `reveal` 支持用事实文本定位（不必记 id）
-- 提示词补充：亲密/情感进展也要记录；`adjust_item` 必须带 `item`
-- 42 个单元测试
-
-### 0.6.1
-
-- 提取提示强化：只记录长期事实、秘密必须写清对象、禁止英译、给出 `knownBy` 示例
-- 容错模型常见写法：`msg:#0`、`msg:4, msg:12`、`knownBy` 数组、`add_event`、`set_scene` 顶层字段
-- 预算裁剪改为最后才删角色认知，保证秘密约束不被优先牺牲
-- 提取最大 token 默认 4096
-- 41 个单元测试
-
-### 0.6.0
-
-- 修正方向：`knownBy` 只表示「哪些 NPC 知道主角的秘密」，不再表示「对玩家保密」
-- NPC 自身的性别、境界、身份、关系、状态一律公开，状态栏不再显示「未知/错误认知」
-- 注入改为「角色块真相 + 角色认知清单」，移除叙述者真相块与重复内容
-- 新增迁移 v5：清除 NPC 自身信息上的 `visibility` / `knownBy`（信息值保留）
-- 主角创建秘密时自动把主角写入 `knownBy`
-- 可视化编辑器只保留主角秘密与秘密事件
-- 36 个单元测试
-
-### 0.5.0
-
-- NPC 字段支持主角认知：未知显示「未知」，错误认知显示 `belief`
-- 状态栏关系栏接入 `knownBy`，不再泄漏 NPC 隐藏境界/关系
-- 可视化知情者编辑器增加「错误认知值」
-- 36 个单元测试
-
-### 0.4.0
-
-- 新增多技能：`add_skill` / `set_skill` / `remove_skill`
-- 状态栏新增第五块「技能」
-- `chapter` 彻底移除：旧数据自动迁移为 `time`
-- NPC `items` 转为个人事实，NPC `items` / `relations` 清空
-- 33 个单元测试
-
-### 0.3.0
-
-- 新增 `remove_item` / `clear_items` / `clear_currency` / `set_item_quantity`
-- 状态栏改为四块可折叠面板：状态 / 个人状态 / 物品 / 关系
-- 关系栏只显示当前在场 NPC
-- 章节从状态栏与注入中移除；`chapter` 仅作旧数据兼容
-- 题材预设增加 `fieldLabels` / `panelMap` 与文字冒险字段
-- NPC 物品/关系不再进入公开注入
-- 29 个单元测试
-
-### 0.2.0
-
-- 物品支持 `quantity` / `unit` / `kind`，货币物品与 `adjust_item`
-- 题材预设增加默认货币
-- 可视化知情者编辑器
-- 主角状态栏（只显示主角）
-- 27 个单元测试
-
-### 0.1.0
-
-- 角色台账、事件台账、双时态历史
-- 认知矩阵与 `[K:...]` 注入
-- 自动/手动结算、规则校验、置信度分级
-- 泄露检测、健康门控
-- JSON 编辑/导出/导入
-- 15 个单元测试

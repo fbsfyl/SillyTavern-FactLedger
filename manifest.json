@@ -1,4 +1,4 @@
-{
+﻿{
     "display_name": "Fact Ledger (事实台账)",
     "loading_order": 120,
     "requires": [],
@@ -6,6 +6,6 @@
     "js": "index.js",
     "css": "style.css",
     "author": "DMost",
-    "version": "0.13.4",
+    "version": "0.13.5",
     "homePage": "https://github.com/fbsfyl/SillyTavern-FactLedger"
 }
