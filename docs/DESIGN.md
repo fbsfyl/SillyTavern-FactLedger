@@ -27,7 +27,6 @@
         "appearance": { "current": "清瘦，左手有旧伤", "history": [] },
         "technique": { "current": "《青木诀》第三重", "history": [] },
         "location": { "current": "青云宗·外门", "history": [] },
-        "status": { "current": "左臂受伤", "history": [] },
         "fame": { "current": "外门新秀", "history": [] },
         "situation": { "current": "黑风寨余党在逃", "history": [] }
       },
@@ -40,7 +39,7 @@
         { "id": "sk_sword", "name": "御剑术", "type": "skill", "level": "入门", "validFrom": "第三日 夜", "validTo": null, "history": [] }
       ],
       "relations": [
-        { "target": "su_wan", "targetName": "苏婉", "type": "同门", "attitude": "互相试探", "validFrom": "第一日 晨", "validTo": null }
+        { "target": "su_wan", "targetName": "苏婉", "type": "同门", "validFrom": "第一日 晨", "validTo": null }
       ]
     },
     "su_wan": {
@@ -51,18 +50,7 @@
       "state": { "gender": { "current": "女", "history": [] } },
       "items": [],
       "skills": [],
-      "relations": [],
-      "facts": []
-    }
-  },
-  "facts": {
-    "f_orb": {
-      "id": "f_orb",
-      "text": "林远持有混沌珠",
-      "access": "intimate",
-      "beliefs": {
-        "wang_shop": { "state": "suspects", "suspicion": "袖中藏着值钱东西" }
-      }
+      "relations": []
     }
   },
   "scene": {
@@ -89,7 +77,7 @@
 - 主角不需要名字：卡片提示词要求旁白用第二人称「你」，NPC 追问姓名时由玩家自己回答，台账不编造名字。
 - 在场角色：`set_scene` 的参与者会自动建立记录（只有名字），字段缺失时状态栏显示「未知」，后续被旁白提到再补。
 - 性别：只允许 `男` / `女` / `未知`。姑娘、公子、师兄、师姐这类明确称谓可用于推断；只有姓氏+职位（如苏掌柜）时记为未知，禁止凭名字用字猜。
-- 境界、宗门、状态、功法：只在旁白或对话明确说明时记录，不编造。
+- 境界、宗门、功法、局势：只在旁白或对话明确说明时记录，不编造。
 
 ### 角色身份：稳定 ID
 
@@ -109,13 +97,13 @@
 
 ### 知情档位
 
-隔离不再按「具体谁」记，而是按**关系档位**：
+隔离不再按「具体谁」记，而是按**知情档位**：
 
 | 档位 | 谁够格知道 |
 |---|---|
 | `protagonist` | 只有主角 |
-| `intimate` | 道侣、挚友、生死之交，以及主角 |
-| `friend` | 同门、熟识、长期合作，以及更高档位 |
+| `intimate` | 托付过底牌、生死与共的人，以及主角 |
+| `friend` | 共同守过密、长期同场的人，以及更高档位 |
 | `public` | 人人皆知，没有隔离 |
 
 - 角色有 `access`，条目也有 `access`；**角色档位 ≥ 条目档位 = 默认知情**。
@@ -123,9 +111,8 @@
 - **条目按剧情定档，不按类型一刀切**：
   1. 当众发生、公开场合、旁人能看到 → `public`；
   2. 没人看见或刻意隐藏 → `protagonist`；
-  3. 有目击者 → 取目击者中与主角关系最疏远的那一档（有公开级目击者就是 `public`）；
+  3. 有旁人在场且被看见 → 按在场者中与主角关系最疏远的那一档写 `access`；
   4. 拿不准 → `protagonist`。
-- 顶层事实用 `witnesses` 写真正看到/听到的人。显式 `access` 若把目击者排除在外，代码会放宽到最疏远目击者的档位。
 - **正文明确优先，正文沉默时按台账**：
   - 正文明确写某人不知道 / 被瞒着 → 当前正文按不知道；台账不改档位（档位级不记个人例外）。
   - 正文明确写某人知道 → 当前正文按知道；只有扩散到某个范围时，才用 `reveal` 放宽档位。
@@ -138,25 +125,29 @@
 - **被动暴露不降档**：被路人撞见、偷听不触发 `reveal`，保持原档位。只被一个公开级目击者看到，不该等于全城知道；代价是这个目击者超出上下文后可能漏提，属于可接受的漏判。
 - **只告诉一个人会按该人档位记录**：同档其他人也会知道；不引入个人级 `knownBy`。这是有意接受的精度代价。
 - 承诺保密不改变谁知道，只约束「会不会传出去」。
-- 关系降级按「直接遗忘」处理；升级则自动获得该档旧秘密的默认知情。
+- 档位降级按「直接遗忘」处理；升级则自动获得该档旧秘密的默认知情。
+- 档位与关系摘要解耦：`set_relation` 只记叙事摘要，不参与档位判定；档位只看知情与信任证据。
+- 神通的建档来源限制为主角自己起名或正文明确写出的学得；主角神通默认 `protagonist`，公开演示或公开传授后才显式放宽。
+- 代码层拒绝给 NPC 写 `add_skill` / `add_ability`；NPC 只保留身份字段、在场状态和对玩家的关系。
 
-#### 关系档位变化标准
+#### 档位变化标准
 
-档位是**该 NPC 与主角的关系**，不是 NPC 之间的关系。`set_tier` 必须写 `reason`，只接受下表理由：
+档位是**信息权限**，不是 NPC 与主角的关系称谓。`set_tier` 必须写 `reason`，只接受下表理由：
 
 | 变化 | 允许理由 |
 |---|---|
-| `public → friend` | 正式结交 / 同门名分 / 多次互助 |
-| `friend → intimate` | 结拜 / 道侣 / 共同生死 / 长期共处 |
-| `public → intimate` | 只允许结拜 / 道侣 / 共同生死 |
-| `intimate → friend` | 决裂 / 背叛 / 明确疏远 |
-| `friend → public` | 决裂 / 背叛 / 长期无往来 |
+| `public → friend` | 共同守密 / 主动告知底牌 / 长期同场 |
+| `friend → intimate` | 生死与共 / 主动托付 / 共同守密 |
+| `public → intimate` | 只允许生死与共 / 主动托付 |
+| `intimate → friend` | 泄密 / 背叛 / 明确疏远 |
+| `friend → public` | 泄密 / 背叛 / 长期无往来 |
 
 防漂移：
 
-- 分歧、吵架、语气变差**不降档**，只改 `relation.attitude`；
+- 分歧、吵架、语气变差**不降档**，也不记账；关系称谓真的变了才写 `set_relation`；
 - 同一次结算每个角色最多改一档；
-- 反向改动需间隔 3 个故事日，里程碑（结拜/道侣/共同生死/决裂/背叛）可越过；
+- 默认需要连续 **2 次同向证据**才实际升降档（设置项「档位变化所需次数」，1–5，1 = 立即）；待确认计数在 3 个故事日内有效，遇到不同目标就重置；
+- 反向改动需间隔 3 个故事日，里程碑（生死与共/主动托付/泄密/背叛）可越过；
 - 「长期无往来」需至少 30 个故事日，且期间没有同场记录；
 - 同档 `set_tier` 是空操作，不写历史。
 
@@ -170,15 +161,16 @@
 | `false_belief` | 错误认知；可以笃定地说错话 |
 
 ```json
-"facts": {
-  "f_orb": {
-    "text": "林远持有混沌珠",
+"items": [
+  {
+    "id": "i_orb",
+    "name": "混沌珠",
     "access": "protagonist",
     "beliefs": {
       "wang_shop": { "state": "false_belief", "belief": "林远只是个没背景的外门弟子" }
     }
   }
-}
+]
 ```
 
 可带 `access` 的实体：
@@ -187,8 +179,6 @@
 - `characters[主角].items[]`（暗藏法宝）
 - `characters[主角].relations[]`（秘密同盟）
 - `characters[主角].skills[]` / `abilities[]`（隐藏功法、底牌神通）
-- `characters[主角].facts[]`（主角的个人秘密）
-- `facts{}`（顶层事实）
 
 示例：
 
@@ -208,15 +198,14 @@
 
 行为：
 
-- 受限字段/物品/关系/个人事实**不进入公开角色块**，只出现在【秘密知情】里；
+- 受限字段/物品/关系/功法/神通**不进入公开角色块**，只出现在【秘密知情】里；
 - 【秘密知情】每条写 `档位；默认知情=…；默认不知情=…`，主角级写「只有你知道」；
-- 未写 `access` 时：顶层事实按目击者定档（最疏远的目击者；没有目击者才回落 `protagonist`）；字段/物品/关系/技能按 `public`。
+- 未写 `access` 时：字段/物品/关系/功法/神通按 `public`；灵根、体质、境界进度按 `protagonist`（进度属于内景，NPC 看不出）。
 - `reveal` 把条目档位放宽到 `to` 所在档；同档其他人也会知道。
 
 `reveal` 支持这些目标：
 
 ```json
-{ "op": "reveal", "fact": "f_orb", "to": "su_wan", "method": "被看见" }
 { "op": "reveal", "character": "user", "field": "realm", "to": "su_wan", "method": "战斗中暴露" }
 { "op": "reveal", "item": "i_orb", "to": "su_wan", "method": "被看见" }
 { "op": "reveal", "relation": "su_wan", "to": "wang_shop", "method": "被迫承认" }
@@ -244,13 +233,9 @@
     { "op": "add_skill", "character": "user", "skill": { "id": "sk_qingmu", "name": "青木诀", "type": "technique", "level": "第三重" }, "validFrom": "第一日 晨", "evidence": "msg:5", "confidence": 0.9 },
     { "op": "set_skill", "character": "user", "skill": "sk_qingmu", "level": "第四重", "validFrom": "第四日 晨", "evidence": "msg:6", "confidence": 0.9 },
     { "op": "move_item", "item": "i_sword", "to": "su_wan", "validFrom": "第四日 晨", "evidence": "msg:90", "confidence": 0.9 },
-    { "op": "set_relation", "from": "user", "to": "su_wan", "type": "同门", "attitude": "信任", "validFrom": "第五日 夜", "evidence": "msg:120", "confidence": 0.9 },
-    { "op": "add_fact", "fact": { "id": "f_orb", "text": "林远持有混沌珠", "access": "protagonist" }, "evidence": "msg:10", "confidence": 0.9 },
-    { "op": "reveal", "fact": "f_orb", "to": "su_wan", "method": "战斗中被迫使用", "validFrom": "第三日 夜", "evidence": "msg:92", "confidence": 0.95 },
+    { "op": "set_relation", "from": "user", "to": "su_wan", "type": "同门", "validFrom": "第五日 夜", "evidence": "msg:120", "confidence": 0.9 },
+    { "op": "reveal", "item": "i_orb", "to": "su_wan", "method": "战斗中被迫使用", "validFrom": "第三日 夜", "evidence": "msg:92", "confidence": 0.95 },
     { "op": "set_scene", "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["user", "su_wan"] } }
-  ],
-  "leaks": [
-    { "character": "su_wan", "fact": "混沌珠", "quote": "你手里那颗珠子……" }
   ]
 }
 ```
@@ -294,16 +279,15 @@
 
 注入的 system 块由两部分组成：先放插件侧的叙事规则（台账与知情约束，来自设置或题材预设，独立于角色卡），再放台账。台账部分如下：
 
-1. **规则头**：台账是玩家已知事实；`[K:]` / `access` 只约束 NPC；
+1. **规则头**：台账是玩家已知事实；`access` 只约束 NPC；字段名用题材预设的中文标签；
 2. **场景**：时间、地点、在场角色；
 3. **角色**：主角 + 在场角色全量按真相渲染；其他角色一行；
-4. **未了结**：人情、承诺、仇怨、悬案，最多 6 条；
-5. **秘密知情**：每条秘密一行，列出「知情 / 不知情 / 怀疑 / 错误认知」。
+4. **秘密知情**：每条秘密一行，列出「知情 / 不知情 / 怀疑 / 错误认知」。
 
 `【秘密知情】` 示例：
 
 ```text
-- 林远持有混沌珠 ｜ 知情=林远；不知情=苏婉；王掌柜误以为「林远只是个没背景的外门弟子」
+- 你 持有 混沌珠 ｜ 主角级；只有你知道
 ```
 
 这样比“按角色列认知”短得多，而且“谁不知道”一眼可见。
@@ -311,7 +295,7 @@
 超出 token 预算时按以下顺序裁剪：
 
 ```
-其他角色 → 非主角角色块 → 全部角色块 → 未了结 → 场景 → 秘密（最后整段丢）
+其他角色 → 非主角角色块 → 全部角色块 → 场景 → 秘密（最后整段丢）
 ```
 
 ---

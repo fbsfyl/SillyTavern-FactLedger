@@ -11,6 +11,7 @@ import {
     parseExtractionResponse,
     detectLeaks,
     selectSettleMessages,
+    collectAssistantText,
     messageHash,
     detectAnchorMutation,
     reanchorWindow,
@@ -24,9 +25,9 @@ import {
     ACCESS_LABELS,
     entityAccess,
     characterAccess,
-    relationLabel,
     knowsEntity,
     normalizeAccess,
+    isPlaceholderPersonaName,
 } from './lib/ledger.js';
 import { DEFAULT_GENRE, GENRE_PRESETS, getGenrePreset, listGenrePresets } from './lib/genres.js';
 import { classifyExtractionFailure, failureMessage } from './lib/refusal.js';
@@ -36,7 +37,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.15.7';
+const VERSION = '0.16.0';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -58,11 +59,11 @@ const DEFAULT_SETTINGS = {
     fallbackProfileId: '',
     maxTokens: 4096,
     confidenceThreshold: 0.7,
+    tierVoteThreshold: 2,
     injectBudget: 3000,
     knowledgeGate: true,
     leakCheck: true,
     showOthers: true,
-    secretCooling: true,
 };
 
 const TABS = [
@@ -72,18 +73,108 @@ const TABS = [
     { id: 'health', label: '健康' },
 ];
 
+/** 内部层级枚举不直接显示给玩家。 */
+const TIER_LABELS = { main: '主角', major: '重要', support: '配角', minor: '次要', npc: '路人' };
+
 let activeTab = 'characters';
 let panelVisible = false;
 let editorMode = false;
 let settleRunning = false;
 let settlePending = false;
 let settleQueued = false;
+let sendLocked = false;
+let sendLockChatId = '';
+let sendLockTimer = null;
+let sendGuardsInstalled = false;
+let lastSendLockWarnAt = 0;
 let lastExtractionFailure = { kind: '', at: 0 };
 let knowledgeEntries = [];
 const collapsedStatusPanels = new Set();
 
 function log(...args) {
     console.log('[FactLedger]', ...args);
+}
+
+function currentChatId() {
+    const ctx = getContext();
+    return ctx.chatId || ctx.getCurrentChatId?.() || '';
+}
+
+function renderSendLockUi(locked) {
+    const form = document.getElementById('send_form');
+    const notice = document.getElementById('factledger_send_lock');
+    if (!locked) {
+        form?.classList.remove('factledger-send-locked');
+        notice?.remove();
+        return;
+    }
+    form?.classList.add('factledger-send-locked');
+    if (notice || !form?.parentElement) return;
+    const el = document.createElement('div');
+    el.id = 'factledger_send_lock';
+    el.className = 'factledger-send-lock';
+    el.textContent = '台账结算中，稍候再发';
+    form.parentElement.insertBefore(el, form);
+}
+
+/** 结算期间锁住发送；只锁「发出」这个动作，输入框仍可正常打字。 */
+function lockSending() {
+    sendLocked = true;
+    sendLockChatId = currentChatId();
+    if (sendLockTimer) clearTimeout(sendLockTimer);
+    // 看门狗：正常路径由 settle finally 解锁，这里只兜底异常。
+    sendLockTimer = setTimeout(() => unlockSending('watchdog'), EXTRACTION_TIMEOUT_MS + 5000);
+    renderSendLockUi(true);
+    log('send locked', sendLockChatId);
+}
+
+function unlockSending(reason = '') {
+    const wasLocked = sendLocked;
+    sendLocked = false;
+    sendLockChatId = '';
+    if (sendLockTimer) {
+        clearTimeout(sendLockTimer);
+        sendLockTimer = null;
+    }
+    renderSendLockUi(false);
+    if (wasLocked) log('send unlocked', reason);
+}
+
+function warnSendLocked() {
+    const now = Date.now();
+    if (now - lastSendLockWarnAt < 1000) return;
+    lastSendLockWarnAt = now;
+    const toast = globalThis.toastr || (typeof toastr !== 'undefined' ? toastr : null);
+    toast?.warning('台账结算中，请稍候再发送。', 'Fact Ledger');
+    setStatus('台账结算中，请稍候再发送。');
+}
+
+/**
+ * 酒馆没有可取消的 MESSAGE_SENDING 事件，只能在 DOM 事件到达酒馆处理器之前拦住。
+ * capture 阶段拦截发送按钮、重新生成、继续；Shift+Enter 放行，保留换行。
+ */
+function installSendGuards() {
+    if (sendGuardsInstalled) return;
+    sendGuardsInstalled = true;
+    window.addEventListener('keydown', (event) => {
+        if (!sendLocked) return;
+        const textarea = document.getElementById('send_textarea');
+        if (!textarea || event.target !== textarea) return;
+        if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        warnSendLocked();
+    }, true);
+    window.addEventListener('click', (event) => {
+        if (!sendLocked) return;
+        const target = event.target instanceof Element
+            ? event.target.closest('#send_but, #option_regenerate, #option_continue, #mes_continue')
+            : null;
+        if (!target) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        warnSendLocked();
+    }, true);
 }
 
 function error(...args) {
@@ -182,7 +273,6 @@ function setStatus(message) {
 
 function revealTargetLabel(op, state) {
     const nameOf = (id) => (id === PROTAGONIST_ID ? '你' : (state.characters?.[id]?.name || id));
-    if (op.fact) return state.facts?.[op.fact]?.text || String(op.fact);
     if (op.item) {
         for (const character of Object.values(state.characters || {})) {
             const item = (character.items || []).find((entry) => entry.id === op.item && entry.validTo == null);
@@ -200,8 +290,11 @@ function revealTargetLabel(op, state) {
         }
         return String(wanted);
     }
-    if (op.field) return `${nameOf(op.character)}.${op.field}`;
-    return '秘密';
+    if (op.field) {
+        const label = getGenrePreset(getSettings().genrePreset).fieldLabels?.[op.field] || op.field;
+        return `${nameOf(op.character)} · ${label}`;
+    }
+    return '条目';
 }
 
 /** reveal 是知情边界的变化，必须让用户看见，不能只写进日志。 */
@@ -220,6 +313,76 @@ function notifyReveals(reveals, state) {
         toast.info(message, 'FactLedger', { timeOut: 12000, extendedTimeOut: 6000, closeButton: true });
     } else {
         error('[FactLedger] 无法弹出提醒，请查看状态栏：', message);
+    }
+}
+
+function characterByRef(state, ref) {
+    const key = String(ref ?? '').trim();
+    if (!key) return null;
+    return state.characters?.[key]
+        || Object.values(state.characters || {}).find((character) => (
+            character.name === key || (character.aliases || []).includes(key)
+        ))
+        || null;
+}
+
+/** 日志与提示里的角色名：内部 id 一律换成显示名。 */
+function displayName(state, ref) {
+    const key = String(ref ?? '').trim();
+    if (!key) return '';
+    if (key === PROTAGONIST_ID) return '你';
+    return characterByRef(state, key)?.name || key;
+}
+
+/** 新建 NPC、关系边和档位变化：结算后给一条可读提示，不要只写进日志。 */
+function notifyLedgerChanges({ newCharacters, changedOps, pendingOps }, state) {
+    const newcomers = [];
+    const seen = new Set();
+    for (const character of Array.isArray(newCharacters) ? newCharacters : []) {
+        if (!character?.id || character.id === PROTAGONIST_ID || seen.has(character.id)) continue;
+        seen.add(character.id);
+        newcomers.push(character.name || character.id);
+    }
+    const relationLines = [];
+    const tierLines = [];
+    const pendingLines = [];
+    for (const op of Array.isArray(changedOps) ? changedOps : []) {
+        if (op?.op === 'set_relation') {
+            const from = characterByRef(state, op.from);
+            const to = characterByRef(state, op.to);
+            const detail = op.type || '';
+            const address = op.address ? `，称「${op.address}」` : '';
+            relationLines.push(`${from?.name || op.from} → ${to?.name || op.to}：${detail || '关系更新'}${address}`);
+        } else if (op?.op === 'set_tier') {
+            const person = characterByRef(state, op.character || op.characterId);
+            if (!person) continue;
+            const from = person.accessChangedFrom
+                ? (ACCESS_LABELS[person.accessChangedFrom] || person.accessChangedFrom)
+                : '新建';
+            const to = ACCESS_LABELS[characterAccess(person)] || characterAccess(person);
+            tierLines.push(`${person.name || person.id}：${from} → ${to}${op.reason ? `（${op.reason}）` : ''}`);
+        }
+    }
+    for (const op of Array.isArray(pendingOps) ? pendingOps : []) {
+        if (op?.op !== 'set_tier' || !op.pendingTier) continue;
+        const person = characterByRef(state, op.character || op.characterId);
+        if (!person) continue;
+        const pending = op.pendingTier;
+        const from = ACCESS_LABELS[pending.from] || pending.from;
+        const to = ACCESS_LABELS[pending.to] || pending.to;
+        pendingLines.push(`${person.name || person.id}：${from} → ${to} ${pending.count}/${pending.required}${op.reason ? `（${op.reason}）` : ''}`);
+    }
+    const lines = [];
+    if (newcomers.length) lines.push(`新建角色：${newcomers.join('、')}`);
+    if (relationLines.length) lines.push(`关系变化：\n${relationLines.join('\n')}`);
+    if (tierLines.length) lines.push(`档位变化：\n${tierLines.join('\n')}`);
+    if (pendingLines.length) lines.push(`档位待确认：\n${pendingLines.join('\n')}`);
+    if (!lines.length) return;
+    const message = lines.join('\n');
+    setStatus(message.replace(/\n/g, '；'));
+    const toast = globalThis.toastr || (typeof toastr !== 'undefined' ? toastr : null);
+    if (typeof toast?.info === 'function') {
+        toast.info(message, 'FactLedger', { timeOut: 10000, extendedTimeOut: 5000, closeButton: true });
     }
 }
 
@@ -260,6 +423,20 @@ function showExtractionFailure(failure) {
 }
 
 /**
+ * 回放/恢复后，泄露与待复核都对应已被改掉的那几条回复，留着只会误导。
+ */
+function clearTransientMeta(state) {
+    state.meta.leaks = [];
+    state.meta.review = [];
+}
+
+/** 回放后主角指向的角色若已不存在，退回默认身份。 */
+function dropMissingProtagonist(state, pinnedBefore, existedBefore) {
+    if (!existedBefore || state.characters[pinnedBefore]) return;
+    state.meta.protagonistId = '';
+}
+
+/**
  * Rebuild the ledger at the newest chat prefix that still matches the op log.
  * Used for edits, deletes, swipes, branches and checkpoint restores.
  */
@@ -271,6 +448,7 @@ function restoreLedgerFromHistory(reason = '') {
     if (!history.length) {
         state.meta.lastProcessedMessage = reanchorWindow(ctx.chat.length, 20);
         state.meta.lastProcessedHash = '';
+        clearTransientMeta(state);
         saveState();
         return -1;
     }
@@ -281,13 +459,16 @@ function restoreLedgerFromHistory(reason = '') {
         // 直接 replayHistory(-1) 会把角色、物品、关系和秘密全部清空。
         state.meta.lastProcessedMessage = reanchorWindow(ctx.chat.length, 20);
         state.meta.lastProcessedHash = '';
+        clearTransientMeta(state);
         saveState();
         log('ledger restore skipped: no matching prefix', reason);
         return -1;
     }
     const restored = replayHistory(history, index);
+    const pinnedBefore = String(state.meta.protagonistId || '').trim();
+    const pinnedExisted = pinnedBefore !== '' && Boolean(state.characters[pinnedBefore]);
     state.characters = restored.characters;
-    state.facts = restored.facts;
+    dropMissingProtagonist(state, pinnedBefore, pinnedExisted);
     state.scene = restored.scene;
     state.meta.history = history.filter((record) => Number(record?.to) <= index);
     // 回放会重新分配 npc_xxx，计数器只许往前，不能让后来的角色复用已有 id。
@@ -299,6 +480,7 @@ function restoreLedgerFromHistory(reason = '') {
     state.meta.lastProcessedHash = index >= 0 && ctx.chat[index]
         ? messageHash(ctx.chat[index])
         : '';
+    clearTransientMeta(state);
     saveState();
     log('ledger restored', reason, index);
     return index;
@@ -316,15 +498,17 @@ function buildInjectionText() {
         ? ctx.chat.slice(-12).map((message) => message?.mes || '').join('\n')
         : '';
     const rules = narrativeRulesText();
+    const preset = getGenrePreset(settings.genrePreset);
     const ledger = assembleInjection(getState(), {
         tokenBudget: settings.injectBudget,
         knowledgeGate: settings.knowledgeGate,
         showOthers: settings.showOthers,
-        secretCooling: settings.secretCooling,
-        skillLabel: getGenrePreset(settings.genrePreset).skillLabel,
+        skillLabel: preset.skillLabel,
+        fieldLabels: preset.fieldLabels,
         recentText,
-        fieldOrder: getGenrePreset(settings.genrePreset).fieldOrder,
+        fieldOrder: preset.fieldOrder,
         protagonistId: getProtagonist()?.id || '',
+        protagonistName: ctx.name1,
     });
     if (!rules) return ledger;
     return ledger ? `${rules}\n\n${ledger}` : rules;
@@ -542,6 +726,7 @@ async function settleLedger(options = {}) {
 
     settleRunning = true;
     settlePending = true;
+    lockSending();
     renderStatusBar();
     setStatus('正在结算本幕…');
     const settleStartedAt = Date.now();
@@ -614,6 +799,8 @@ async function settleLedger(options = {}) {
         const requestedOps = normalizeOpsAliases(parsed.ops);
         const result = applyOps(baseState, requestedOps, {
             confidenceThreshold: settings.confidenceThreshold,
+            tierVoteThreshold: settings.tierVoteThreshold,
+            protagonistId: state.meta?.protagonistId || settings.protagonistId || PROTAGONIST_ID,
             reviewThreshold: 0.5,
             messageCount: ctx.chat.length,
             protagonistAliases,
@@ -697,7 +884,17 @@ async function settleLedger(options = {}) {
         nextState.meta.messagesSinceSettle = 0;
         nextState.meta.lastSettleAt = new Date().toISOString();
         nextState.meta.lastError = '';
-        nextState.meta.leaks = settings.leakCheck ? parsed.leaks : [];
+        // 泄露由代码检测，不依赖提取模型自报。
+        const leakActive = (nextState.scene?.participants || [])
+            .filter((id) => id && id !== (nextState.meta?.protagonistId || PROTAGONIST_ID));
+        nextState.meta.leaks = settings.leakCheck
+            ? detectLeaks(
+                nextState,
+                collectAssistantText(ctx.chat, newFrom, lastIndex),
+                leakActive,
+                getGenrePreset(settings.genrePreset).fieldLabels,
+            )
+            : [];
         // 低置信 op 不落账，但要留一个入口：面板可以补采纳，否则等于静默丢弃。
         const pendingReview = Array.isArray(nextState.meta.review) ? nextState.meta.review : [];
         const freshReview = (result.review || []).map((op) => ({
@@ -712,11 +909,18 @@ async function settleLedger(options = {}) {
         refreshInjection();
         renderPanel();
         lastExtractionFailure = { kind: '', at: 0 };
+        // 待确认的档位票只是记了一票，没有真正落地，不能算进「应用」。
+        const appliedCount = result.applied.filter((op) => !op?.pendingTier).length;
         setStatus(
-            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${result.applied.length} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${parsed.leaks.length} 条。`,
+            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${appliedCount} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${nextState.meta.leaks.length} 条。`,
         );
         // reveal 改变了谁知道，必须让用户当场看到；只提示真正改了档位的 reveal。
         notifyReveals((result.changedOps || []).filter((op) => op && op.op === 'reveal'), nextState);
+        notifyLedgerChanges({
+            newCharacters,
+            changedOps: result.changedOps || [],
+            pendingOps: result.pendingOps || [],
+        }, nextState);
         log('settle result', result);
         return result;
     } catch (err) {
@@ -727,6 +931,7 @@ async function settleLedger(options = {}) {
         settleRunning = false;
         settlePending = false;
         renderStatusBar();
+        unlockSending('settle-done');
         // 结算期间到达的回复：本轮结束后立刻补一次，避免要等到再下一条消息。
         if (settleQueued) {
             settleQueued = false;
@@ -864,10 +1069,10 @@ function bindSettings() {
     bindCheckbox('factledger_knowledge_gate', 'knowledgeGate');
     bindCheckbox('factledger_leak_check', 'leakCheck');
     bindCheckbox('factledger_show_others', 'showOthers');
-    bindCheckbox('factledger_secret_cooling', 'secretCooling');
     bindCheckbox('factledger_narrative_rules_toggle', 'injectNarrativeRules');
 
     bindNumber('factledger_auto_interval', 'autoInterval');
+    bindNumber('factledger_tier_votes', 'tierVoteThreshold');
     bindNumber('factledger_max_tokens', 'maxTokens');
     bindNumber('factledger_confidence', 'confidenceThreshold');
     bindNumber('factledger_inject_budget', 'injectBudget');
@@ -1061,7 +1266,9 @@ function renderCharacters(body) {
     body.innerHTML = characters
         .map((character) => {
             const stateEntries = character.state && typeof character.state === 'object'
-                ? Object.entries(character.state).map(([key, value]) => `${key}: ${value?.current ?? ''}`).join('；')
+                ? Object.entries(character.state)
+                    .map(([key, value]) => `${preset.fieldLabels?.[key] || key}: ${value?.current ?? ''}`)
+                    .join('；')
                 : '';
             const items = (character.items || [])
                 .filter((item) => item.validTo == null)
@@ -1083,20 +1290,113 @@ function renderCharacters(body) {
                 <div class="factledger-card">
                     <div class="factledger-card-head">
                         <strong>${escapeHtml(character.name || character.id)}</strong>
-                        <span class="factledger-muted">${escapeHtml(character.tier || '')}</span>
+                        <span class="factledger-muted">${escapeHtml(TIER_LABELS[character.tier] || character.tier || '')}</span>
                     </div>
                     <div class="factledger-muted">${escapeHtml(stateEntries || '无状态字段')}</div>
                     <div class="factledger-muted">物品：${escapeHtml(items || '无')}</div>
                     <div class="factledger-muted">${escapeHtml(preset.skillLabel || '技能')}：${escapeHtml(skills || '无')}</div>
-                    <div class="factledger-muted">神通：${escapeHtml(abilities || '无')}</div>
+                    <div class="factledger-muted">${escapeHtml(preset.abilityLabel || '能力')}：${escapeHtml(abilities || '无')}</div>
                 </div>
             `;
         })
         .join('');
 }
 
+/** 把一条 op 说成中文；认不出的旧版 op 返回空串。 */
+function describeLedgerOp(op, state, preset) {
+    if (!op || typeof op !== 'object') return '';
+    const name = (ref) => displayName(state, ref);
+    const fieldLabel = (field) => preset.fieldLabels?.[field] || field;
+    const refText = (raw) => {
+        const key = String(raw && typeof raw === 'object' ? (raw.name || raw.id || '') : raw ?? '').trim();
+        return key;
+    };
+    const itemLabel = (raw) => {
+        const key = refText(raw);
+        if (!key) return '';
+        for (const character of Object.values(state.characters || {})) {
+            for (const item of character.items || []) {
+                if (item.id === key || item.name === key) return item.name;
+            }
+        }
+        return key;
+    };
+    const traitLabel = (raw) => {
+        const key = refText(raw);
+        if (!key) return '';
+        for (const character of Object.values(state.characters || {})) {
+            for (const trait of [...(character.skills || []), ...(character.abilities || [])]) {
+                if (trait.id === key || trait.name === key) return trait.name;
+            }
+        }
+        return key;
+    };
+    switch (op.op) {
+        case 'set':
+            return `${name(op.character)} · ${fieldLabel(op.field)}：${op.value ?? ''}`;
+        case 'set_tier': {
+            const access = ACCESS_LABELS[op.access] || op.access || '';
+            const reason = op.reason ? `（${op.reason}）` : '';
+            if (op.pendingTier) {
+                return `${name(op.character)} 的知情档位待确认 → ${access} ${op.pendingTier.count}/${op.pendingTier.required}${reason}`;
+            }
+            return `${name(op.character)} 的知情档位 → ${access}${reason}`;
+        }
+        case 'set_relation': {
+            const detail = op.type || '';
+            const address = op.address ? `，称「${op.address}」` : '';
+            return `${name(op.from)} → ${name(op.to)}：${detail || '关系更新'}${address}`;
+        }
+        case 'add_item':
+            return `${name(op.character)} 获得 ${itemLabel(op.item)}`;
+        case 'adjust_item': {
+            const delta = Number(op.delta) || 0;
+            return `${itemLabel(op.item)} ${delta >= 0 ? '+' : ''}${delta}${op.reason ? `（${op.reason}）` : ''}`;
+        }
+        case 'set_item_quantity':
+            return `${itemLabel(op.item)} 数量 → ${op.quantity}`;
+        case 'remove_item':
+            return `${name(op.character)} 失去 ${itemLabel(op.item)}${op.reason ? `（${op.reason}）` : ''}`;
+        case 'move_item':
+            return `${itemLabel(op.item)} → ${name(op.to)}`;
+        case 'clear_items':
+            return `${name(op.character)} 清空物品${Array.isArray(op.kinds) && op.kinds.length ? `（${op.kinds.join('、')}）` : ''}`;
+        case 'clear_currency':
+            return `${name(op.character)} 清空钱财`;
+        case 'add_skill':
+            return `${name(op.character)} 习得${preset.skillLabel || '技能'} ${traitLabel(op.skill)}`;
+        case 'set_skill':
+            return `${preset.skillLabel || '技能'} ${traitLabel(op.skill)}${op.level ? ` → ${op.level}` : ' 更新'}`;
+        case 'remove_skill':
+            return `${name(op.character)} 失去${preset.skillLabel || '技能'} ${traitLabel(op.skill)}`;
+        case 'add_ability':
+            return `${name(op.character)} 修得${preset.abilityLabel || '能力'} ${traitLabel(op.ability)}`;
+        case 'set_ability':
+            return `${preset.abilityLabel || '能力'} ${traitLabel(op.ability)}${op.level ? ` → ${op.level}` : ' 更新'}`;
+        case 'remove_ability':
+            return `${name(op.character)} 失去${preset.abilityLabel || '能力'} ${traitLabel(op.ability)}`;
+        case 'reveal': {
+            if (op.belief) return `${name(op.to)} 误以为「${op.belief}」`;
+            if (op.suspicion) return `${name(op.to)} 起疑「${op.suspicion}」`;
+            const method = op.method ? `（${op.method}）` : '';
+            return `${name(op.to)} 知道了「${revealTargetLabel(op, state)}」${method}`;
+        }
+        case 'rename_character': {
+            const person = op.id ? state.characters?.[op.id] : null;
+            const oldName = person?.aliases?.[0] || '临时名';
+            return `改名：${oldName} → ${person?.name || op.name || ''}`;
+        }
+        case 'merge_character':
+            return `合并档案 → ${name(op.toId || op.to)}`;
+        // 场景已在卡片顶部单独显示；旧版 add_fact 等已停用。
+        default:
+            return '';
+    }
+}
+
 function renderHistory(body) {
     const state = getState();
+    const preset = getGenrePreset(getSettings().genrePreset);
     const history = Array.isArray(state.meta?.history) ? state.meta.history : [];
     if (!history.length) {
         body.innerHTML = '<div class="factledger-empty">还没有结算日志。</div>';
@@ -1107,15 +1407,28 @@ function renderHistory(body) {
         <div class="factledger-muted">共 ${history.length} 条结算记录，显示最近 ${shown.length} 条。</div>
         ${shown.map((record) => {
             const scene = record.scene || {};
-            const meta = [scene.time, scene.place].filter(Boolean).join('｜');
-            const count = Array.isArray(record.ops) ? record.ops.length : 0;
+            const ops = (Array.isArray(record.ops) ? record.ops : []).filter((op) => op?.op !== 'set_scene');
+            const lines = ops.map((op) => describeLedgerOp(op, state, preset)).filter(Boolean);
+            const skipped = ops.length - lines.length;
+            const personNames = (scene.participants || [])
+                .map((participant) => displayName(state, participant))
+                .filter(Boolean);
+            const meta = [
+                scene.time ? `时间：${scene.time}` : '',
+                scene.place ? `地点：${scene.place}` : '',
+                personNames.length ? `在场：${personNames.join('、')}` : '',
+            ].filter(Boolean).join('｜');
             return `
                 <div class="factledger-card">
                     <div class="factledger-card-head">
-                        <strong>#${escapeHtml(String(record.to ?? ''))}</strong>
-                        <span class="factledger-badge">${count} 条 op</span>
+                        <strong>至 #${escapeHtml(String(record.to ?? ''))}</strong>
+                        <span class="factledger-badge">${lines.length} 项变更</span>
                     </div>
                     <div class="factledger-muted">${escapeHtml(meta || '无场景信息')}</div>
+                    ${lines.length
+                        ? `<ul class="factledger-log-list">${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`
+                        : '<div class="factledger-muted">本幕没有可展示的变更。</div>'}
+                    ${skipped > 0 ? `<div class="factledger-muted">另有 ${skipped} 条旧版记录已停用，不再展示。</div>` : ''}
                 </div>
             `;
         }).join('')}
@@ -1139,29 +1452,21 @@ function knowledgeSummary(entity, state) {
 function renderKnowledge(body) {
     const state = getState();
     const protagonistId = getProtagonist()?.id || '';
+    const preset = getGenrePreset(getSettings().genrePreset);
+    const fieldLabel = (field) => preset.fieldLabels?.[field] || field;
     const cards = [];
-
-    for (const fact of Object.values(state.facts)) {
-        cards.push({
-            type: '事实',
-            id: fact.id,
-            text: fact.text,
-            access: entityAccess(fact, 'protagonist'),
-            known: knowledgeSummary(fact, state),
-            ref: { kind: 'fact', id: fact.id },
-        });
-    }
 
     for (const character of Object.values(state.characters)) {
         // 只有主角自己的秘密需要标注知情者；NPC 自身信息公开。
         if (character.id !== protagonistId) continue;
-        const name = character.name || character.id;
+        // 认知页只列主角的秘密，主体统一写「你」，不显示内部 id。
+        const name = '你';
         for (const [field, entry] of Object.entries(character.state || {})) {
             if (!isGated(entry)) continue;
             cards.push({
                 type: '字段',
-                id: `${name}.${field}`,
-                text: `${field}：${entry.current ?? entry}`,
+                subject: `${name} · ${fieldLabel(field)}`,
+                text: `${entry.current ?? entry}`,
                 access: entityAccess(entry, 'public'),
                 known: knowledgeSummary(entry, state),
                 ref: { kind: 'field', charId: character.id, field },
@@ -1173,8 +1478,8 @@ function renderKnowledge(body) {
             const quantityText = item.kind === 'currency' || quantity !== 1 ? `×${quantity}${unit}` : '';
             cards.push({
                 type: '物品',
-                id: item.id,
-                text: `${name} 持有 ${item.name}${quantityText}`,
+                subject: `${name} · 持有`,
+                text: `${item.name}${quantityText}`,
                 access: entityAccess(item, 'public'),
                 known: knowledgeSummary(item, state),
                 ref: { kind: 'item', charId: character.id, itemId: item.id },
@@ -1183,8 +1488,8 @@ function renderKnowledge(body) {
         for (const relation of (character.relations || []).filter((relation) => relation.validTo == null && isGated(relation))) {
             cards.push({
                 type: '关系',
-                id: `${name} → ${relation.targetName || relation.target}`,
-                text: [relation.type, relation.attitude].filter(Boolean).join('/'),
+                subject: `${name} → ${relation.targetName || relation.target}`,
+                text: relation.type || '关系',
                 access: entityAccess(relation, 'public'),
                 known: knowledgeSummary(relation, state),
                 ref: { kind: 'relation', charId: character.id, target: relation.target || relation.targetName },
@@ -1192,9 +1497,9 @@ function renderKnowledge(body) {
         }
         for (const skill of (character.skills || []).filter((skill) => skill.validTo == null && isGated(skill))) {
             cards.push({
-                type: '功法',
-                id: skill.name,
-                text: `${name} 修炼 ${skill.name}${skill.level ? `（${skill.level}）` : ''}`,
+                type: preset.skillLabel || '技能',
+                subject: `${name} · ${preset.skillLabel || '技能'}`,
+                text: `${skill.name}${skill.level ? `（${skill.level}）` : ''}`,
                 access: entityAccess(skill, 'public'),
                 known: knowledgeSummary(skill, state),
                 ref: { kind: 'skill', charId: character.id, traitId: skill.id },
@@ -1202,9 +1507,9 @@ function renderKnowledge(body) {
         }
         for (const ability of (character.abilities || []).filter((ability) => ability.validTo == null && isGated(ability))) {
             cards.push({
-                type: '神通',
-                id: ability.name,
-                text: `${name} 修习 ${ability.name}${ability.level ? `（${ability.level}）` : ''}`,
+                type: preset.abilityLabel || '能力',
+                subject: `${name} · ${preset.abilityLabel || '能力'}`,
+                text: `${ability.name}${ability.level ? `（${ability.level}）` : ''}`,
                 access: entityAccess(ability, 'public'),
                 known: knowledgeSummary(ability, state),
                 ref: { kind: 'ability', charId: character.id, traitId: ability.id },
@@ -1223,12 +1528,14 @@ function renderKnowledge(body) {
         .map((card, index) => `
             <div class="factledger-card">
                 <div class="factledger-card-head">
-                    <strong>${escapeHtml(card.id || '')}</strong>
+                    <strong class="factledger-card-subject">${escapeHtml(card.subject || '')}</strong>
                     <span class="factledger-badge ${card.access === 'protagonist' ? 'warn' : 'ok'}">${escapeHtml(card.type)} · ${escapeHtml(ACCESS_LABELS[card.access] || card.access)}</span>
                 </div>
-                <div>${escapeHtml(card.text || '')}</div>
-                <div class="factledger-muted">${escapeHtml(card.known)}</div>
-                <button class="menu_button factledger-edit-known" data-index="${index}" style="margin-top:6px;">编辑档位</button>
+                <div class="factledger-card-text">${escapeHtml(card.text || '')}</div>
+                <div class="factledger-card-foot">
+                    <span class="factledger-muted">${escapeHtml(card.known)}</span>
+                    <button class="menu_button factledger-edit-known" data-index="${index}">编辑档位</button>
+                </div>
             </div>
         `)
         .join('');
@@ -1244,8 +1551,6 @@ function renderKnowledge(body) {
 function resolveEntity(ref) {
     const state = getState();
     switch (ref?.kind) {
-        case 'fact':
-            return state.facts[ref.id];
         case 'field':
             return state.characters[ref.charId]?.state?.[ref.field];
         case 'item':
@@ -1286,7 +1591,7 @@ function openKnownByEditor(card) {
                 <strong>编辑档位</strong>
                 <span class="factledger-modal-close" title="关闭">✕</span>
             </div>
-            <div class="factledger-muted">对象：${escapeHtml(card.type)} · ${escapeHtml(card.id || '')}</div>
+            <div class="factledger-muted">对象：${escapeHtml(card.subject || card.type)}${card.text ? `｜${escapeHtml(card.text)}` : ''}</div>
             <div class="factledger-row">
                 <label for="factledger_known_access">知情档位</label>
                 <select id="factledger_known_access">${options}</select>
@@ -1310,7 +1615,7 @@ function openKnownByEditor(card) {
         refreshInjection();
         close();
         renderPanel();
-        setStatus(`已把「${card.id || card.type}」改为${ACCESS_LABELS[entity.access]}。`);
+        setStatus(`已把「${card.subject || card.type}」改为${ACCESS_LABELS[entity.access]}。`);
     });
 }
 
@@ -1362,7 +1667,7 @@ function populateProtagonistSelect() {
     for (const character of Object.values(state.characters)) {
         const option = document.createElement('option');
         option.value = character.id;
-        option.textContent = `${character.name || character.id}${character.tier === 'main' ? '（main）' : ''}`;
+        option.textContent = `${character.name || character.id}${character.tier === 'main' ? '（当前主角）' : ''}`;
         select.appendChild(option);
     }
     const current = state.meta?.protagonistId || settings.protagonistId || '';
@@ -1420,6 +1725,12 @@ function renderStatusBar() {
     const worldLines = [];
     const personalLines = [];
 
+    // 姓名固定放个人状态第一位：台账记过就用台账，否则用酒馆 persona 名（默认占位符不算）。
+    const recordedName = stateValue(protagonist.state?.name);
+    const personaName = isPlaceholderPersonaName(ctx.name1) ? '' : String(ctx.name1 || '').trim();
+    const displayName = recordedName || personaName;
+    if (displayName) personalLines.push(`${preset.fieldLabels?.name || '姓名'}：${displayName}`);
+
     const scenePlace = state.scene?.place || '';
     worldLines.push(`时间：${state.scene?.time || '未知'}`);
     worldLines.push(`地点：${scenePlace || '未知'}`);
@@ -1436,8 +1747,8 @@ function renderStatusBar() {
         orderedFields.push(field);
     }
     for (const field of orderedFields) {
-        // progress 单独画进度条，不再作为一行文字重复出现。
-        if (field === 'location' || field === 'progress') continue;
+        // progress 单独画进度条，不再作为一行文字重复出现；姓名已在最上面单独处理。
+        if (field === 'location' || field === 'progress' || field === 'name') continue;
         const entry = protagonist.state?.[field];
         const value = stateValue(entry);
         const meta = fieldMeta(field, entry, preset);
@@ -1473,6 +1784,12 @@ function renderStatusBar() {
         [ability.name, ability.level].filter(Boolean).join('｜')
     ));
 
+    // 功法与神通合并到一个面板；都没有时也显示「无」。
+    const artLines = [];
+    if (skillLines.length) artLines.push(`${preset.skillLabel || '技能'}：${skillLines.join('、')}`);
+    if (abilityLines.length) artLines.push(`${preset.abilityLabel || '能力'}：${abilityLines.join('、')}`);
+    if (!artLines.length) artLines.push('无');
+
     const items = (protagonist.items || []).filter((item) => item.validTo == null);
     const itemLines = [];
     const assets = items.filter((item) => item.kind === 'currency').map(formatItemText);
@@ -1492,46 +1809,49 @@ function renderStatusBar() {
     }
     const otherItems = items.filter((item) => item.kind && !groupedKinds.has(item.kind) && Number(item.quantity ?? 1) > 0);
     if (otherItems.length) itemLines.push(`其他：${otherItems.map(formatItemText).join('、')}`);
+    // 物品面板常驻；台账还没有物品时显示「无」，避免误以为面板坏了。
+    if (!itemLines.length) itemLines.push('无');
 
     const relationLines = [];
     const participantIds = (state.scene?.participants || []).filter((pid) => pid !== id);
     for (const pid of participantIds) {
         const npc = state.characters[pid];
         if (!npc) {
-            relationLines.push(`${pid}｜未知｜未知`);
+            relationLines.push([pid, '未知', '未知', '—', '未知'].join('｜'));
             continue;
         }
         const gender = stateValue(npc.state?.gender);
         const levelEntry = npc.state?.realm || npc.state?.rank || npc.state?.level || npc.state?.stage;
         const level = stateValue(levelEntry);
-        const ownRelation = (protagonist.relations || []).find((item) => item.validTo == null && item.target === pid);
-        // 称呼与「NPC 怎么看玩家」通常记在 NPC→玩家这条边上。
-        const npcRelation = (npc.relations || []).find((item) => item.validTo == null && protagonist.id && item.target === protagonist.id);
-        const relation = ownRelation || npcRelation || null;
-        const address = npcRelation?.address || ownRelation?.address || '';
-        const label = relationLabel(npc, relation);
         const tierText = ACCESS_LABELS[characterAccess(npc)] || characterAccess(npc);
-        const relationText = [
-            relation?.attitude,
-            address ? `称「${address}」` : '',
-        ].filter(Boolean).join('，');
+        const ownRelation = (protagonist.relations || []).find((item) => item.validTo == null && item.target === pid);
+        const npcRelation = (npc.relations || []).find((item) => item.validTo == null && protagonist.id && item.target === protagonist.id);
+        const rawType = String((ownRelation || npcRelation)?.type || '').trim();
+        // 只显示短称谓；态度、称呼等长文本仍留在台账和注入里，避免撑开状态栏。
+        const relationType = rawType && rawType.length <= 8 && !/[，,。；;：:！!？?…]/.test(rawType)
+            ? rawType
+            : '—';
         relationLines.push([
             npc.name || pid,
             gender || '未知',
             level || '未知',
-            [label, tierText].filter(Boolean).join(' · '),
-            relationText,
+            relationType,
+            tierText,
         ].filter(Boolean).join('｜'));
     }
+
+    // 关系表头的等级列跟着题材走：修仙是境界，都市是职位，通用题材退回「等级」。
+    const levelLabel = ['realm', 'rank', 'level', 'stage']
+        .map((field) => preset.fieldLabels?.[field])
+        .find(Boolean) || '等级';
 
     // 开局还没有主角记录时也要显示骨架（时间/地点/境界进度），而不是整条状态栏消失。
     const panels = [
         { key: 'world', title: '状态', lines: worldLines },
         { key: 'personal', title: '个人状态', lines: personalLines, extra: progressBar },
-        { key: 'skills', title: preset.skillLabel || '技能', lines: skillLines },
-        { key: 'abilities', title: '神通', lines: abilityLines },
+        { key: 'arts', title: `${preset.skillLabel || '技能'}与${preset.abilityLabel || '能力'}`, lines: artLines },
         { key: 'items', title: '物品', lines: itemLines },
-        { key: 'relations', title: '关系', lines: relationLines, head: '人物｜性别｜境界｜关系' },
+        { key: 'relations', title: '关系', lines: relationLines, head: `人物｜性别｜${levelLabel}｜关系｜档位` },
     ].filter((panel) => panel.lines.length || panel.extra);
 
     if (!panels.length && !settlePending) {
@@ -1601,15 +1921,17 @@ function renderHealth(body) {
     const settings = getSettings();
     const leaks = state.meta?.leaks ?? [];
     const review = Array.isArray(state.meta?.review) ? state.meta.review : [];
+    const preset = getGenrePreset(settings.genrePreset);
     const injection = assembleInjection(state, {
         tokenBudget: settings.injectBudget,
         knowledgeGate: settings.knowledgeGate,
         showOthers: settings.showOthers,
-        secretCooling: settings.secretCooling,
-        skillLabel: getGenrePreset(settings.genrePreset).skillLabel,
+        skillLabel: preset.skillLabel,
+        fieldLabels: preset.fieldLabels,
         recentText: '',
-        fieldOrder: getGenrePreset(settings.genrePreset).fieldOrder,
+        fieldOrder: preset.fieldOrder,
         protagonistId: getProtagonist()?.id || '',
+        protagonistName: getContext().name1,
     });
     const issues = healthCheck(state, { injection, tokenBudget: settings.injectBudget });
     const history = Array.isArray(state.meta?.history) ? state.meta.history : [];
@@ -1628,7 +1950,7 @@ function renderHealth(body) {
             <div><strong>泄露检测</strong> ${leaks.length ? '<span class="factledger-badge err">有泄露</span>' : '<span class="factledger-badge ok">正常</span>'}</div>
             ${leaks.length ? leaks.map((leak, index) => `
                 <div class="factledger-muted">
-                    ${escapeHtml(leak.characterName || leak.character || '')}：${escapeHtml(leak.factText || leak.fact || '')}
+                    ${escapeHtml(leak.characterName || leak.character || '')}：${escapeHtml(leak.label || leak.factText || leak.fact || '')}
                     <button class="menu_button" data-leak-ack="${index}">设为已知</button>
                     <button class="menu_button" data-leak-dismiss="${index}" title="仅清除本条记录，台账不变；叙事者下次仍可能越界。反复出现时建议设为已知或修正提取规则。">忽略</button>
                 </div>
@@ -1676,21 +1998,13 @@ function renderHealth(body) {
 /** 低置信 op 的可读摘要，避免在面板里糊一整段 JSON。 */
 function describeReviewOp(op) {
     const parts = [String(op?.op || 'op')];
-    for (const key of ['character', 'field', 'value', 'fact', 'item', 'skill', 'ability', 'relation', 'to', 'access', 'reason']) {
+    for (const key of ['character', 'field', 'value', 'item', 'skill', 'ability', 'relation', 'to', 'access', 'reason']) {
         if (op?.[key] === undefined || op?.[key] === null || op?.[key] === '') continue;
         const value = typeof op[key] === 'object' ? JSON.stringify(op[key]) : String(op[key]);
         parts.push(`${key}=${value}`);
     }
     const text = parts.join(' ');
     return text.length > 180 ? `${text.slice(0, 177)}...` : text;
-}
-
-/** 叙事者已经写漏了：把这条泄漏接成既成事实，或当它没发生。 */
-function findFactForLeak(state, leak) {
-    const id = leak.fact || '';
-    if (state.facts?.[id]) return state.facts[id];
-    const text = String(leak.factText || leak.fact || '').trim();
-    return Object.values(state.facts || {}).find((fact) => String(fact.text || '').trim() === text) || null;
 }
 
 /** 把泄露记录还原成 reveal 的目标。 */
@@ -1704,8 +2018,7 @@ function leakRevealTarget(state, leak) {
         const name = state.characters?.[target.character]?.name || target.character;
         return { character: target.character, field: target.field, label: `${name}.${target.field}` };
     }
-    const fact = findFactForLeak(state, leak);
-    return fact ? { fact: fact.id, label: fact.text } : null;
+    return null;
 }
 
 function acknowledgeLeak(index) {
@@ -1723,7 +2036,6 @@ function acknowledgeLeak(index) {
         op: 'reveal',
         to: characterId,
         method: '叙事中已经泄露，按已知处理',
-        ...(target.fact ? { fact: target.fact } : {}),
         ...(target.item ? { item: target.item } : {}),
         ...(target.skill ? { skill: target.skill } : {}),
         ...(target.ability ? { ability: target.ability } : {}),
@@ -1792,7 +2104,12 @@ function acceptReview(index) {
     if (!entry) return;
     const rawOp = entry?.op && typeof entry.op === 'object' ? entry.op : entry;
     const { needsReview, ...op } = rawOp;
-    const result = applyOps(state, [op], { confidenceThreshold: 0, reviewThreshold: 0 });
+    const result = applyOps(state, [op], {
+        confidenceThreshold: 0,
+        reviewThreshold: 0,
+        tierVoteThreshold: getSettings().tierVoteThreshold,
+        protagonistId: state.meta?.protagonistId || getSettings().protagonistId || PROTAGONIST_ID,
+    });
     if (!(result.applied || []).length) {
         const reason = (result.rejected || [])[0]?.reason || '这条 op 被拒绝';
         setStatus(`未能采纳：${reason}`);
@@ -1837,7 +2154,6 @@ function buildDebugData() {
         scene: state.scene,
         characters: Object.values(state.characters || {})
             .map((character) => `${character.id}:${character.name}:${character.tier}`),
-        factIds: Object.keys(state.facts || {}),
         leakCount: Array.isArray(state.meta?.leaks) ? state.meta.leaks.length : 0,
         injectionTokens: estimateTokens(injection),
         settings: {
@@ -1846,6 +2162,7 @@ function buildDebugData() {
             profileId: settings.profileId,
             maxTokens: settings.maxTokens,
             confidenceThreshold: settings.confidenceThreshold,
+            tierVoteThreshold: settings.tierVoteThreshold,
             injectBudget: settings.injectBudget,
             knowledgeGate: settings.knowledgeGate,
             leakCheck: settings.leakCheck,
@@ -1976,12 +2293,15 @@ function registerSlashCommands() {
                 return '';
             }
             const restored = replayHistory(history, target.to);
+            const pinnedBefore = String(state.meta.protagonistId || '').trim();
+            const pinnedExisted = pinnedBefore !== '' && Boolean(state.characters[pinnedBefore]);
             state.characters = restored.characters;
-            state.facts = restored.facts;
+            dropMissingProtagonist(state, pinnedBefore, pinnedExisted);
             state.scene = restored.scene;
             state.meta.history = history.filter((record) => Number(record.to) <= target.to);
             state.meta.lastProcessedMessage = target.to;
             state.meta.lastProcessedHash = messageHash(ctx.chat[target.to]);
+            clearTransientMeta(state);
             saveState();
             refreshInjection();
             renderPanel();
@@ -2014,7 +2334,12 @@ function checkRecentLeaks() {
         : Object.values(state.characters)
             .filter((character) => character.id !== PROTAGONIST_ID)
             .map((character) => character.id);
-    const leaks = detectLeaks(state, lastAssistant.mes, active);
+    const leaks = detectLeaks(
+        state,
+        lastAssistant.mes,
+        active,
+        getGenrePreset(getSettings().genrePreset).fieldLabels,
+    );
     state.meta.leaks = leaks;
     saveState();
     renderPanel();
@@ -2145,6 +2470,9 @@ function registerEvents() {
     eventSource.on(eventTypes.CHAT_CHANGED, () => {
         log('chat changed');
         editorMode = false;
+        if (sendLocked && sendLockChatId && sendLockChatId !== currentChatId()) {
+            unlockSending('chat-changed');
+        }
         restoreLedgerFromHistory('chat-changed');
         refreshInjection();
         renderPanel();
@@ -2205,6 +2533,8 @@ function registerEvents() {
             renderPanel();
         });
     }
+
+    installSendGuards();
 }
 
 function initializeState() {

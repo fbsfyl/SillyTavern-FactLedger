@@ -7,118 +7,132 @@
         <div class="inline-drawer-content">
             <div class="factledger-hint">结构化角色状态与认知隔离。不记事件，剧情记忆交给酒馆原生上下文与向量召回。</div>
 
-    <div class="factledger-row">
-        <label for="factledger_enabled">启用台账</label>
-        <input type="checkbox" id="factledger_enabled" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_auto_interval">自动结算间隔</label>
-        <input type="number" id="factledger_auto_interval" min="0" step="1" />
-        <span class="factledger-muted">条消息（0 = 仅手动）</span>
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_genre_preset">题材预设</label>
-        <select id="factledger_genre_preset"></select>
-    </div>
-
-    <div class="factledger-row" style="display:block;">
-        <label for="factledger_genre_hint" style="display:block;margin-bottom:4px;">题材与字段提示</label>
-        <textarea id="factledger_genre_hint" rows="6" style="width:100%;box-sizing:border-box;"></textarea>
-        <div class="factledger-hint">选择预设会自动填入，可自行修改。默认修仙；文笔风格仍由世界书/系统提示决定。</div>
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_narrative_rules_toggle">每回合注入叙事规则</label>
-        <input type="checkbox" id="factledger_narrative_rules_toggle" />
-    </div>
-
-    <div class="factledger-row" style="display:block;">
-        <label for="factledger_narrative_rules" style="display:block;margin-bottom:4px;">叙事规则（台账与知情约束）</label>
-        <textarea id="factledger_narrative_rules" rows="8" style="width:100%;box-sizing:border-box;" placeholder="插件侧规则：怎么读台账、怎么处理知情与未了结。每回合随台账一起注入。"></textarea>
-        <div class="factledger-hint">
-            <button id="factledger_restore_rules" class="menu_button">恢复题材默认规则</button>
-            默认规则随题材预设提供；角色卡的叙述规则留在角色卡里，不要粘贴到这里。
-        </div>
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_status_bar">主角状态栏</label>
-        <input type="checkbox" id="factledger_status_bar" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_protagonist">主角</label>
-        <select id="factledger_protagonist"></select>
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_use_current">跟随当前连接</label>
-        <input type="checkbox" id="factledger_use_current" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_profile">提取连接配置</label>
-        <select id="factledger_profile"></select>
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_fallback_profile">备选提取连接</label>
-        <select id="factledger_fallback_profile"></select>
-        <span class="factledger-muted">主连接失败时自动改用</span>
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_extraction_preset">提取时包含酒馆预设</label>
-        <input type="checkbox" id="factledger_extraction_preset" />
-        <span class="factledger-muted">叙事型破限预设会要求标签和正文，通常会破坏提取 JSON，默认关闭</span>
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_max_tokens">提取最大 token</label>
-        <input type="number" id="factledger_max_tokens" min="256" step="128" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_confidence">置信度阈值</label>
-        <input type="number" id="factledger_confidence" min="0" max="1" step="0.05" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_inject_budget">台账注入 token 预算</label>
-        <input type="number" id="factledger_inject_budget" min="500" step="100" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_knowledge_gate">秘密知情约束</label>
-        <input type="checkbox" id="factledger_knowledge_gate" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_leak_check">泄露检测</label>
-        <input type="checkbox" id="factledger_leak_check" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_show_others">注入离场角色名录</label>
-        <input type="checkbox" id="factledger_show_others" />
-    </div>
-
-    <div class="factledger-row">
-        <label for="factledger_secret_cooling">秘密冷化（30 轮未触碰则不注入）</label>
-        <input type="checkbox" id="factledger_secret_cooling" />
-    </div>
-
-    <div class="factledger-actions">
-        <button id="factledger_open_panel" class="menu_button">打开台账</button>
-        <button id="factledger_settle" class="menu_button">结算本幕</button>
-        <button id="factledger_export" class="menu_button">导出 JSON</button>
-        <button id="factledger_import" class="menu_button">导入 JSON</button>
-        <input type="file" id="factledger_import_file" accept="application/json" style="display:none" />
-    </div>
+            <div class="factledger-actions">
+                <button id="factledger_open_panel" class="menu_button">打开台账</button>
+                <button id="factledger_settle" class="menu_button">结算本幕</button>
+                <button id="factledger_export" class="menu_button">导出 JSON</button>
+                <button id="factledger_import" class="menu_button">导入 JSON</button>
+                <input type="file" id="factledger_import_file" accept="application/json" style="display:none" />
+            </div>
 
             <div id="factledger_status">未初始化。</div>
+
+            <hr>
+            <h4>基本</h4>
+
+            <label class="checkbox_label" for="factledger_enabled">
+                <input type="checkbox" id="factledger_enabled" />
+                <span>启用台账</span>
+            </label>
+
+            <label class="checkbox_label" for="factledger_status_bar">
+                <input type="checkbox" id="factledger_status_bar" />
+                <span>显示主角状态栏</span>
+            </label>
+
+            <div class="factledger-row">
+                <label for="factledger_protagonist">主角</label>
+                <select id="factledger_protagonist" class="text_pole"></select>
+            </div>
+
+            <div class="factledger-row">
+                <label for="factledger_auto_interval">自动结算间隔</label>
+                <input type="number" id="factledger_auto_interval" class="text_pole" min="0" step="1" />
+                <span class="factledger-muted">条消息（0 = 仅手动）</span>
+            </div>
+
+            <div class="factledger-row">
+                <label for="factledger_tier_votes">档位变化所需次数</label>
+                <input type="number" id="factledger_tier_votes" class="text_pole" min="1" max="5" step="1" />
+                <span class="factledger-muted">连续同向证据达到这个次数才实际升降档；1 = 立即</span>
+            </div>
+
+            <hr>
+            <h4>提取与结算</h4>
+
+            <label class="checkbox_label" for="factledger_use_current">
+                <input type="checkbox" id="factledger_use_current" />
+                <span>跟随当前连接做提取</span>
+            </label>
+
+            <div class="factledger-row">
+                <label for="factledger_profile">提取连接配置</label>
+                <select id="factledger_profile" class="text_pole"></select>
+            </div>
+
+            <div class="factledger-row">
+                <label for="factledger_fallback_profile">备选提取连接</label>
+                <select id="factledger_fallback_profile" class="text_pole"></select>
+                <span class="factledger-muted">主连接失败时自动改用</span>
+            </div>
+
+            <label class="checkbox_label" for="factledger_extraction_preset">
+                <input type="checkbox" id="factledger_extraction_preset" />
+                <span>提取时包含酒馆预设</span>
+            </label>
+            <div class="factledger-hint">叙事型破限预设会要求标签和正文，通常会破坏提取 JSON，默认关闭。</div>
+
+            <div class="factledger-row">
+                <label for="factledger_max_tokens">提取最大 token</label>
+                <input type="number" id="factledger_max_tokens" class="text_pole" min="256" step="128" />
+            </div>
+
+            <div class="factledger-row">
+                <label for="factledger_confidence">置信度阈值</label>
+                <input type="number" id="factledger_confidence" class="text_pole" min="0" max="1" step="0.05" />
+                <span class="factledger-muted">≥ 阈值自动应用，低于则拒绝</span>
+            </div>
+
+            <hr>
+            <h4>题材与提示</h4>
+
+            <div class="factledger-row">
+                <label for="factledger_genre_preset">题材预设</label>
+                <select id="factledger_genre_preset" class="text_pole"></select>
+            </div>
+
+            <div class="factledger-field">
+                <label for="factledger_genre_hint">题材与字段提示</label>
+                <textarea id="factledger_genre_hint" class="text_pole" rows="6"></textarea>
+                <div class="factledger-hint">选择预设会自动填入，可自行修改。文笔风格仍由世界书/系统提示决定。</div>
+            </div>
+
+            <label class="checkbox_label" for="factledger_narrative_rules_toggle">
+                <input type="checkbox" id="factledger_narrative_rules_toggle" />
+                <span>每回合注入叙事规则</span>
+            </label>
+
+            <div class="factledger-field">
+                <label for="factledger_narrative_rules">叙事规则（台账与知情约束）</label>
+                <textarea id="factledger_narrative_rules" class="text_pole" rows="8" placeholder="插件侧规则：怎么读台账、怎么处理知情与揭示。每回合随台账一起注入。"></textarea>
+                <div class="factledger-hint">
+                    <button id="factledger_restore_rules" class="menu_button">恢复题材默认规则</button>
+                    默认规则随题材预设提供；角色卡的叙述规则留在角色卡里，不要粘贴到这里。
+                </div>
+            </div>
+
+            <hr>
+            <h4>注入与隔离</h4>
+
+            <div class="factledger-row">
+                <label for="factledger_inject_budget">台账注入 token 预算</label>
+                <input type="number" id="factledger_inject_budget" class="text_pole" min="500" step="100" />
+            </div>
+
+            <label class="checkbox_label" for="factledger_knowledge_gate">
+                <input type="checkbox" id="factledger_knowledge_gate" />
+                <span>秘密知情约束</span>
+            </label>
+
+            <label class="checkbox_label" for="factledger_leak_check">
+                <input type="checkbox" id="factledger_leak_check" />
+                <span>泄露检测</span>
+            </label>
+
+            <label class="checkbox_label" for="factledger_show_others">
+                <input type="checkbox" id="factledger_show_others" />
+                <span>注入离场角色名录</span>
+            </label>
         </div>
     </div>
 </div>

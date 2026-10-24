@@ -1,25 +1,74 @@
+/* 台账结算期间：只锁发送，输入框照常可编辑。 */
+#send_form.factledger-send-locked #send_but {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+.factledger-send-lock {
+    margin: 0 8px 6px;
+    padding: 5px 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.45));
+    border-radius: 6px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.25));
+    color: var(--SmartThemeBodyColor, inherit);
+    opacity: 0.85;
+    font-size: 0.85em;
+    line-height: 1.4;
+    text-align: center;
+    user-select: none;
+}
+
 #factledger_settings {
     margin-top: 10px;
+}
+
+/* 分隔线沿用酒馆原生 hr 的渐变样式，只调间距。 */
+#factledger_settings hr {
+    margin: 12px 0 6px;
+}
+
+#factledger_settings h4 {
+    margin: 8px 0 6px;
+    font-size: 1em;
+    opacity: 0.95;
+}
+
+#factledger_settings .checkbox_label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0;
+    cursor: pointer;
 }
 
 #factledger_settings .factledger-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 4px 0;
+    margin: 6px 0;
 }
 
 #factledger_settings .factledger-row label {
     flex: 0 0 auto;
-    min-width: 120px;
+    min-width: 110px;
 }
 
 #factledger_settings .factledger-row input[type="number"],
 #factledger_settings .factledger-row select {
     flex: 1 1 auto;
+    min-width: 0;
 }
 
-/* SillyTavern themes sometimes pair a white input background with light text. */
+#factledger_settings .factledger-field {
+    margin: 8px 0;
+}
+
+#factledger_settings .factledger-field > label {
+    display: block;
+    margin-bottom: 2px;
+}
+
+/* 与酒馆 .text_pole 一致：统一用半透明黑底，避免浅色主题下输入框与背景糊在一起。 */
 #factledger_settings input:not([type="checkbox"]),
 #factledger_settings select,
 #factledger_settings textarea,
@@ -27,8 +76,14 @@
 #factledger_known_modal select,
 .factledger-body textarea {
     color: var(--SmartThemeBodyColor, inherit);
-    background-color: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.25));
+    background-color: var(--black30a, rgba(0, 0, 0, 0.3));
     border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.45));
+}
+
+#factledger_settings textarea {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
 }
 
 #factledger_settings .factledger-hint {
@@ -44,11 +99,23 @@
     padding: 2px 8px;
 }
 
+#factledger_settings .factledger-muted {
+    opacity: 0.7;
+    font-size: 0.85em;
+}
+
+/* 常用操作放在最上面，2×2 排列，避免底部窄条难点。 */
 #factledger_settings .factledger-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
-    margin-top: 8px;
+    margin: 6px 0;
+}
+
+#factledger_settings .factledger-actions .menu_button {
+    flex: 1 1 calc(50% - 6px);
+    width: auto;
+    margin: 0;
 }
 
 #factledger_status {
@@ -189,6 +256,44 @@
     gap: 8px;
     align-items: center;
     margin-bottom: 4px;
+    flex-wrap: wrap;
+}
+
+/* 认知卡片：主体在标题，内容单独一行，知情摘要与「编辑档位」并排。 */
+.factledger-body .factledger-card-subject,
+.factledger-body .factledger-card-text {
+    overflow-wrap: anywhere;
+}
+
+.factledger-body .factledger-card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+.factledger-body .factledger-card-foot .factledger-muted {
+    flex: 1 1 auto;
+}
+
+.factledger-body .factledger-edit-known {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 2px 10px;
+    font-size: 0.9em;
+}
+
+/* 日志页：每条结算的 op 逐条列成中文。 */
+.factledger-body .factledger-log-list {
+    margin: 6px 0 0;
+    padding-left: 18px;
+}
+
+.factledger-body .factledger-log-list li {
+    margin: 2px 0;
+    overflow-wrap: anywhere;
 }
 
 .factledger-body .factledger-muted {
