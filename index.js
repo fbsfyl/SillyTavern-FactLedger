@@ -28,6 +28,7 @@ import {
     knowsEntity,
     normalizeAccess,
     isPlaceholderPersonaName,
+    promotePublicEntries,
 } from './lib/ledger.js';
 import { DEFAULT_GENRE, GENRE_PRESETS, getGenrePreset, listGenrePresets } from './lib/genres.js';
 import { classifyExtractionFailure, failureMessage } from './lib/refusal.js';
@@ -64,6 +65,8 @@ const DEFAULT_SETTINGS = {
     knowledgeGate: true,
     leakCheck: true,
     showOthers: true,
+    // 每 N 条结算过的消息，把主角仍公开的字段/物品/功法/神通升到朋友级；0 = 关闭。
+    publicPromoteInterval: 20,
 };
 
 const TABS = [
@@ -78,7 +81,6 @@ const TIER_LABELS = { main: '主角', major: '重要', support: '配角', minor:
 
 let activeTab = 'characters';
 let panelVisible = false;
-let editorMode = false;
 let settleRunning = false;
 let settlePending = false;
 let settleQueued = false;
@@ -864,6 +866,19 @@ async function settleLedger(options = {}) {
                 },
             }]
             : [];
+        // 公开项定期上调：按结算过的消息数计，把主角仍公开的字段/物品/功法/神通升到朋友级。
+        // 结果作为一条 promote_public 写进版本日志，回放时按同一条 op 复原。
+        const promoteInterval = Math.max(0, Math.round(Number(settings.publicPromoteInterval) || 0));
+        let promotionOp = null;
+        if (promoteInterval > 0) {
+            const anchor = Number(nextState.meta.lastPublicPromotionAt);
+            const lastPromoted = Number.isFinite(anchor) ? anchor : -1;
+            if (lastIndex - lastPromoted >= promoteInterval) {
+                const promoted = promotePublicEntries(nextState, nextState.meta.protagonistId || PROTAGONIST_ID);
+                nextState.meta.lastPublicPromotionAt = lastIndex;
+                if (promoted > 0) promotionOp = { op: 'promote_public', count: promoted };
+            }
+        }
         const newCharacters = Object.values(nextState.characters || {})
             .filter((character) => !beforeIds.has(character.id))
             .map((character) => ({
@@ -874,7 +889,7 @@ async function settleLedger(options = {}) {
         history.push({
             to: lastIndex,
             prefixHash: prefixHashes[lastIndex] || '',
-            ops: [...result.applied, ...sceneOps],
+            ops: [...result.applied, ...sceneOps, ...(promotionOp ? [promotionOp] : [])],
             characters: newCharacters,
             scene: { ...nextState.scene },
         });
@@ -912,7 +927,7 @@ async function settleLedger(options = {}) {
         // 待确认的档位票只是记了一票，没有真正落地，不能算进「应用」。
         const appliedCount = result.applied.filter((op) => !op?.pendingTier).length;
         setStatus(
-            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${appliedCount} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${nextState.meta.leaks.length} 条。`,
+            `结算完成（${((Date.now() - settleStartedAt) / 1000).toFixed(1)} 秒）：应用 ${appliedCount} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条，泄露 ${nextState.meta.leaks.length} 条${promotionOp ? `，公开项上调 ${promotionOp.count} 条` : ''}。`,
         );
         // reveal 改变了谁知道，必须让用户当场看到；只提示真正改了档位的 reveal。
         notifyReveals((result.changedOps || []).filter((op) => op && op.op === 'reveal'), nextState);
@@ -1072,6 +1087,7 @@ function bindSettings() {
     bindCheckbox('factledger_narrative_rules_toggle', 'injectNarrativeRules');
 
     bindNumber('factledger_auto_interval', 'autoInterval');
+    bindNumber('factledger_public_promote_interval', 'publicPromoteInterval');
     bindNumber('factledger_tier_votes', 'tierVoteThreshold');
     bindNumber('factledger_max_tokens', 'maxTokens');
     bindNumber('factledger_confidence', 'confidenceThreshold');
@@ -1228,10 +1244,7 @@ function createPanel() {
     panel.querySelector('.factledger-close')?.addEventListener('click', () => togglePanel(false));
     panel.querySelector('#factledger_panel_close')?.addEventListener('click', () => togglePanel(false));
     panel.querySelector('#factledger_panel_refresh')?.addEventListener('click', () => renderPanel());
-    panel.querySelector('#factledger_panel_edit')?.addEventListener('click', () => {
-        editorMode = !editorMode;
-        renderPanel();
-    });
+    panel.querySelector('#factledger_panel_edit')?.addEventListener('click', () => openJsonEditor());
     panel.querySelector('#factledger_panel_settle')?.addEventListener('click', () => {
         settleLedger({ manual: true });
     });
@@ -1363,6 +1376,8 @@ function describeLedgerOp(op, state, preset) {
             return `${name(op.character)} 清空物品${Array.isArray(op.kinds) && op.kinds.length ? `（${op.kinds.join('、')}）` : ''}`;
         case 'clear_currency':
             return `${name(op.character)} 清空钱财`;
+        case 'promote_public':
+            return `公开项定期上调：${op.count ? `${op.count} 项` : '公开项'} → 朋友级`;
         case 'add_skill':
             return `${name(op.character)} 习得${preset.skillLabel || '技能'} ${traitLabel(op.skill)}`;
         case 'set_skill':
@@ -2158,6 +2173,7 @@ function buildDebugData() {
         injectionTokens: estimateTokens(injection),
         settings: {
             autoInterval: settings.autoInterval,
+            publicPromoteInterval: settings.publicPromoteInterval,
             genrePreset: settings.genrePreset,
             profileId: settings.profileId,
             maxTokens: settings.maxTokens,
@@ -2346,41 +2362,69 @@ function checkRecentLeaks() {
     setStatus(`泄露检查完成：候选 ${leaks.length} 条。`);
 }
 
-function renderEditor(body) {
-    const state = getState();
-    body.innerHTML = `
-        <div class="factledger-muted">直接编辑完整台账 JSON。保存前会做基本结构校验。</div>
-        <textarea id="factledger_editor">${escapeHtml(JSON.stringify(state, null, 2))}</textarea>
-        <div class="factledger-actions">
-            <button class="menu_button" id="factledger_editor_save">保存</button>
-            <button class="menu_button" id="factledger_editor_cancel">取消</button>
+/** 独立的 JSON 编辑弹窗：大编辑框，Ctrl+S 保存，Esc 关闭。 */
+function openJsonEditor() {
+    document.getElementById('factledger_json_modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'factledger_json_modal';
+    modal.className = 'factledger-modal';
+    modal.innerHTML = `
+        <div class="factledger-modal-content factledger-json-content">
+            <div class="factledger-modal-head">
+                <strong>编辑台账 JSON</strong>
+                <span class="factledger-modal-close" title="关闭">✕</span>
+            </div>
+            <div class="factledger-muted">保存前会做基本结构校验；改动较大时建议先导出备份。Ctrl+S 保存，Esc 关闭。</div>
+            <textarea id="factledger_json_editor" spellcheck="false">${escapeHtml(JSON.stringify(getState(), null, 2))}</textarea>
+            <div class="factledger-actions">
+                <button class="menu_button" id="factledger_json_save">保存</button>
+                <button class="menu_button" id="factledger_json_cancel">取消</button>
+            </div>
         </div>
     `;
-    body.querySelector('#factledger_editor_save')?.addEventListener('click', saveEditor);
-    body.querySelector('#factledger_editor_cancel')?.addEventListener('click', () => {
-        editorMode = false;
-        renderPanel();
-    });
-}
+    document.body.appendChild(modal);
 
-function saveEditor() {
-    const textarea = document.getElementById('factledger_editor');
-    if (!textarea) return;
-    try {
-        const data = JSON.parse(textarea.value);
-        if (!data || typeof data !== 'object' || typeof data.characters !== 'object') {
-            throw new Error('结构不完整：需要 characters 对象');
+    const close = () => {
+        document.removeEventListener('keydown', onKey);
+        modal.remove();
+    };
+    const save = () => {
+        const textarea = modal.querySelector('#factledger_json_editor');
+        if (!textarea) return;
+        try {
+            const data = JSON.parse(textarea.value);
+            if (!data || typeof data !== 'object' || typeof data.characters !== 'object') {
+                throw new Error('结构不完整：需要 characters 对象');
+            }
+            const ctx = getContext();
+            ctx.chatMetadata[MODULE_NAME] = normalizeState(data);
+            saveState();
+            refreshInjection();
+            close();
+            renderPanel();
+            setStatus('台账 JSON 已保存。');
+        } catch (err) {
+            setStatus(`保存失败：${err.message}`);
         }
-        const ctx = getContext();
-        ctx.chatMetadata[MODULE_NAME] = normalizeState(data);
-        saveState();
-        refreshInjection();
-        editorMode = false;
-        renderPanel();
-        setStatus('台账 JSON 已保存。');
-    } catch (err) {
-        setStatus(`保存失败：${err.message}`);
+    };
+    function onKey(event) {
+        if (event.key === 'Escape') {
+            close();
+        } else if (event.key.toLowerCase() === 's' && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            save();
+        }
     }
+
+    modal.querySelector('.factledger-modal-close')?.addEventListener('click', close);
+    modal.querySelector('#factledger_json_cancel')?.addEventListener('click', close);
+    modal.querySelector('#factledger_json_save')?.addEventListener('click', save);
+    // 点遮罩关闭，点内容区不关。
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) close();
+    });
+    document.addEventListener('keydown', onKey);
+    modal.querySelector('#factledger_json_editor')?.focus();
 }
 
 function renderPanel() {
@@ -2389,12 +2433,6 @@ function renderPanel() {
 
     populateProtagonistSelect();
     renderStatusBar();
-
-    if (editorMode) {
-        document.querySelectorAll('.factledger-tab').forEach((el) => el.classList.remove('active'));
-        renderEditor(body);
-        return;
-    }
 
     document.querySelectorAll('.factledger-tab').forEach((el) => {
         el.classList.toggle('active', el.dataset.tab === activeTab);
@@ -2469,7 +2507,6 @@ function registerEvents() {
 
     eventSource.on(eventTypes.CHAT_CHANGED, () => {
         log('chat changed');
-        editorMode = false;
         if (sendLocked && sendLockChatId && sendLockChatId !== currentChatId()) {
             unlockSending('chat-changed');
         }

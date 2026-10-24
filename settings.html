@@ -42,6 +42,12 @@
             </div>
 
             <div class="factledger-row">
+                <label for="factledger_public_promote_interval">公开项定期上调</label>
+                <input type="number" id="factledger_public_promote_interval" class="text_pole" min="0" step="1" />
+                <span class="factledger-muted">条消息一次（0 = 关闭）；把主角公开级的字段/物品/功法/神通升到朋友级，不含性别、姓名、关系</span>
+            </div>
+
+            <div class="factledger-row">
                 <label for="factledger_tier_votes">档位变化所需次数</label>
                 <input type="number" id="factledger_tier_votes" class="text_pole" min="1" max="5" step="1" />
                 <span class="factledger-muted">连续同向证据达到这个次数才实际升降档；1 = 立即</span>

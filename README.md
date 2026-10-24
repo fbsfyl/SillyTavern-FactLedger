@@ -2,7 +2,7 @@
 
 [![release](https://img.shields.io/github/v/release/fbsfyl/SillyTavern-FactLedger?label=release)](https://github.com/fbsfyl/SillyTavern-FactLedger/releases)
 [![license](https://img.shields.io/github/license/fbsfyl/SillyTavern-FactLedger)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-163-brightgreen)](test/ledger.test.mjs)
+[![tests](https://img.shields.io/badge/tests-166-brightgreen)](test/ledger.test.mjs)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.19%2B-5b4ee6)](https://github.com/SillyTavern/SillyTavern)
 
 面向 SillyTavern 文字冒险 / 角色扮演的结构化记忆扩展：**当前状态台账 + 双时态历史 + 秘密知情约束**。
@@ -129,7 +129,7 @@ SillyTavern-FactLedger/
 │   ├── ledger.js          # 纯逻辑：双时态/认知/注入/泄露/健康检查
 │   └── genres.js          # 题材预设
 ├── test/
-│   └── ledger.test.mjs    # 163 个单元测试
+│   └── ledger.test.mjs    # 166 个单元测试
 ├── docs/
 │   └── DESIGN.md          # 数据模型 / 提取协议 / 注入装配
 ├── CHANGELOG.md
@@ -183,6 +183,7 @@ git clone https://github.com/fbsfyl/SillyTavern-FactLedger
 |---|---|---|
 | 启用台账 | 开 | 关闭后清空注入 |
 | 自动结算间隔 | 1 | 每 N 条消息自动结算；`0` = 仅手动。每次只提取新消息 + 前 3 条上下文 |
+| 公开项定期上调 | 20 | 每 N 条消息把主角仍为公开级的字段/物品/功法/神通升到朋友级（不含性别、姓名、进度、关系）；`0` = 关闭 |
 | 主角状态栏 | 开 | 右下角只显示主角的紧凑面板 |
 | 主角 | 空 = 第一个 main | 指定状态栏显示的角色 |
 | 题材预设 | 修仙 | 修仙 / 都市 / 科幻 / 悬疑 / 言情 / 自定义 |
@@ -339,7 +340,7 @@ NPC 自身的信息不做隔离，因此不会出现在这里。
    - **认知**：主角的秘密与谁知情
    - **日志**：版本日志与回放
    - **健康**：注入估算、泄露、健康告警、注入预览
-5. 需要手工修正时，点「编辑 JSON」直接改完整台账。
+5. 需要手工修正时，点「编辑 JSON」在独立大弹窗里改完整台账（Ctrl+S 保存，Esc 关闭）。
 6. 定期用「导出 JSON」备份。
 
 ---

@@ -357,6 +357,32 @@
     width: 760px;
 }
 
+/* JSON 编辑弹窗：尽量占满屏幕，长台账也不用在小框里滚。 */
+.factledger-json-content {
+    width: min(1100px, 92vw);
+    max-width: 92vw;
+    height: min(82vh, 900px);
+    display: flex;
+    flex-direction: column;
+}
+
+.factledger-json-content textarea {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 320px;
+    box-sizing: border-box;
+    white-space: pre;
+    overflow: auto;
+    resize: none;
+    font-family: var(--monoFontFamily, ui-monospace, SFMono-Regular, Consolas, monospace);
+    font-size: 0.85em;
+    line-height: 1.4;
+}
+
+.factledger-json-content .factledger-actions {
+    margin-top: 8px;
+}
+
 .factledger-debug-content textarea {
     width: 100%;
     min-height: 360px;

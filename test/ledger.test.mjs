@@ -23,6 +23,7 @@ import {
     characterAccess,
     knowsEntity,
     ensureCharacterRecord,
+    promotePublicEntries,
 } from '../lib/ledger.js';
 import { DEFAULT_GENRE, getGenrePreset } from '../lib/genres.js';
 
@@ -1926,6 +1927,69 @@ test('对抗：归零后的注入显示 0/100 且仍标为只有主角知道', (
     ]).state;
     const text = assembleInjection(state, { protagonistId: 'user', activeCharacterIds: ['user'] });
     assert.match(text, /progress：0\/100（只有你知道）/);
+});
+
+// ---------------------------------------------------------------- 公开项定期上调
+
+function promoteState() {
+    return run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'gender', value: '男', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'name', value: '林远', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'appearance', value: '身材魁梧', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'progress', value: 30, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_item', character: 'user', item: { id: 'i_jade', name: '玉牌' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_item', character: 'user', item: { id: 'i_gold', name: '灵石', kind: 'currency', quantity: 3 }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { name: '青木诀' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_ability', character: 'user', ability: { name: '御风诀', access: 'public' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set_relation', from: 'user', to: '苏婉', type: '同门', evidence: 'msg:0', confidence: 0.9 },
+    ]).state;
+}
+
+test('公开项定期上调：字段/物品/功法/神通升到朋友级，跳过性别、姓名、进度与关系', () => {
+    const state = promoteState();
+    const promoted = promotePublicEntries(state, 'user');
+    const user = state.characters.user;
+    assert.equal(entityAccess(user.state.appearance), 'friend');
+    assert.equal(entityAccess(user.state.gender), 'public');
+    assert.equal(entityAccess(user.state.name), 'public');
+    assert.equal(entityAccess(user.state.progress), 'protagonist');
+    assert.equal(entityAccess(user.items.find((item) => item.id === 'i_jade')), 'friend');
+    assert.equal(entityAccess(user.items.find((item) => item.id === 'i_gold')), 'friend');
+    assert.equal(entityAccess(user.skills[0]), 'friend');
+    assert.equal(entityAccess(user.abilities[0]), 'friend');
+    assert.equal(entityAccess(user.relations[0]), 'public');
+    assert.equal(promoted, 5);
+    // 幂等：全部升过之后再扫一次不产生变化。
+    assert.equal(promotePublicEntries(state, 'user'), 0);
+});
+
+test('公开项定期上调不会把已经是私密的条目降回去', () => {
+    const state = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'appearance', value: '魁梧', access: 'protagonist', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_item', character: 'user', item: { id: 'i_jade', name: '玉牌', access: 'intimate' }, evidence: 'msg:0', confidence: 0.9 },
+    ]).state;
+    promotePublicEntries(state, 'user');
+    assert.equal(entityAccess(state.characters.user.state.appearance), 'protagonist');
+    assert.equal(entityAccess(state.characters.user.items[0]), 'intimate');
+});
+
+test('promote_public 作为 op 落账并能被回放', () => {
+    const state = promoteState();
+    const result = run(state, [{ op: 'promote_public' }]);
+    assert.equal(result.rejected.length, 0);
+    assert.equal(entityAccess(result.state.characters.user.state.appearance), 'friend');
+
+    const replayed = replayHistory([{
+        to: 0,
+        characters: [{ id: 'user', name: '你', aliases: [] }],
+        ops: [
+            { op: 'set', character: 'user', field: 'appearance', value: '魁梧', evidence: 'msg:0', confidence: 0.9 },
+            { op: 'add_item', character: 'user', item: { id: 'i_jade', name: '玉牌' }, evidence: 'msg:0', confidence: 0.9 },
+            { op: 'promote_public', count: 2 },
+        ],
+    }]);
+    assert.equal(entityAccess(replayed.characters.user.state.appearance), 'friend');
+    assert.equal(entityAccess(replayed.characters.user.items[0]), 'friend');
 });
 
 test('replayHistory 按场景参与者重建角色档案且不改写日志', () => {
