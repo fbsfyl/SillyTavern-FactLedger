@@ -24,6 +24,7 @@ import {
     ACCESS_LABELS,
     entityAccess,
     characterAccess,
+    relationLabel,
     knowsEntity,
     normalizeAccess,
 } from './lib/ledger.js';
@@ -35,7 +36,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.15.6';
+const VERSION = '0.15.7';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Qwen/Queen chat templates reject a system message that is not the first one,
 // so the ledger is merged into the main system prompt instead of inserted
@@ -1403,7 +1404,10 @@ function fieldMeta(field, entry, preset) {
 function renderStatusBar() {
     const settings = getSettings();
     let bar = document.getElementById('factledger_statusbar');
-    if (!settings.statusBarEnabled) {
+    // 关闭聊天后 SillyTavern 会清空 chat_metadata，但状态栏 DOM 还留在页面上。
+    const ctx = getContext();
+    const chatId = ctx.chatId || ctx.getCurrentChatId?.();
+    if (!settings.statusBarEnabled || !chatId) {
         bar?.remove();
         return;
     }
@@ -1505,10 +1509,19 @@ function renderStatusBar() {
         const npcRelation = (npc.relations || []).find((item) => item.validTo == null && protagonist.id && item.target === protagonist.id);
         const relation = ownRelation || npcRelation || null;
         const address = npcRelation?.address || ownRelation?.address || '';
-        const relationText = (relation || address)
-            ? [[relation?.type, relation?.attitude].filter(Boolean).join('/'), address ? `称「${address}」` : ''].filter(Boolean).join('，')
-            : '';
-        relationLines.push([npc.name || pid, gender || '未知', level || '未知', ACCESS_LABELS[characterAccess(npc)] || characterAccess(npc), relationText].filter(Boolean).join('｜'));
+        const label = relationLabel(npc, relation);
+        const tierText = ACCESS_LABELS[characterAccess(npc)] || characterAccess(npc);
+        const relationText = [
+            relation?.attitude,
+            address ? `称「${address}」` : '',
+        ].filter(Boolean).join('，');
+        relationLines.push([
+            npc.name || pid,
+            gender || '未知',
+            level || '未知',
+            [label, tierText].filter(Boolean).join(' · '),
+            relationText,
+        ].filter(Boolean).join('｜'));
     }
 
     // 开局还没有主角记录时也要显示骨架（时间/地点/境界进度），而不是整条状态栏消失。
@@ -1518,7 +1531,7 @@ function renderStatusBar() {
         { key: 'skills', title: preset.skillLabel || '技能', lines: skillLines },
         { key: 'abilities', title: '神通', lines: abilityLines },
         { key: 'items', title: '物品', lines: itemLines },
-        { key: 'relations', title: '关系', lines: relationLines, head: '人物｜性别｜境界｜档位｜关系' },
+        { key: 'relations', title: '关系', lines: relationLines, head: '人物｜性别｜境界｜关系' },
     ].filter((panel) => panel.lines.length || panel.extra);
 
     if (!panels.length && !settlePending) {

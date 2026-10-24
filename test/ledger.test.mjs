@@ -21,6 +21,7 @@ import {
     healthCheck,
     entityAccess,
     characterAccess,
+    relationLabel,
     knowsEntity,
     ensureCharacterRecord,
 } from '../lib/ledger.js';
@@ -490,6 +491,43 @@ test('物品与关系支持档位', () => {
     state = result.state;
     assert.equal(entityAccess(state.characters.lin_yuan.items[0]), 'intimate');
     assert.equal(entityAccess(state.characters.lin_yuan.relations[0]), 'intimate');
+});
+
+test('关系称谓按档位收敛，但不吞掉自由称谓', () => {
+    const npc = (access, reason) => ({
+        id: 'npc', name: '苏绾', access, accessReason: reason,
+        state: {}, items: [], relations: [], facts: [],
+    });
+    assert.equal(relationLabel(npc('intimate'), { type: '道侣' }), '道侣');
+    assert.equal(relationLabel(npc('friend'), { type: '好友' }), '好友');
+    assert.equal(relationLabel(npc('public'), { type: '道侣' }), '陌生');
+    assert.equal(relationLabel(npc('public'), null), '陌生');
+    assert.equal(relationLabel(npc('friend'), { type: '旧盟' }), '旧盟');
+    assert.equal(relationLabel(npc('intimate', '共同生死'), { type: '同门' }), '同门');
+    assert.equal(relationLabel(npc('intimate', '共同生死'), null), '生死之交');
+});
+
+test('关系称谓的对抗输入不越过档位', () => {
+    const npc = (access, reason) => ({
+        id: 'npc', name: '苏绾', access, accessReason: reason,
+        state: {}, items: [], relations: [], facts: [],
+    });
+    // 带修饰的强度词同样要按档位收敛。
+    assert.equal(relationLabel(npc('public'), { type: '道侣（名义）' }), '陌生');
+    assert.equal(relationLabel(npc('public'), { type: '道侣/亲密' }), '陌生');
+    assert.equal(relationLabel(npc('public'), { type: ' 道侣 ' }), '陌生');
+    // 旧数据的「密友」归一成「好友」，仍受朋友级约束。
+    assert.equal(relationLabel(npc('friend'), { type: '密友' }), '好友');
+    assert.equal(relationLabel(npc('public'), { type: '密友' }), '陌生');
+    // 自由称谓保留；越级的强度词被拦下后回落到档位默认。
+    assert.equal(relationLabel(npc('public'), { type: '旧盟' }), '旧盟');
+    assert.equal(relationLabel(npc('friend'), { type: '挚友' }), '熟识');
+    // 空类型、坏档位、空角色都不崩。
+    assert.equal(relationLabel(npc('friend'), { type: '   ' }), '熟识');
+    assert.equal(relationLabel(npc('vip'), { type: '道侣' }), '陌生');
+    assert.equal(relationLabel(null, null), '陌生');
+    // 没有关系边时靠改档理由给称谓。
+    assert.equal(relationLabel(npc('friend', '同门名分'), null), '同门');
 });
 
 test('reveal 支持字段/物品/关系', () => {
