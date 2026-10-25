@@ -288,6 +288,42 @@
     font-size: 0.85em;
 }
 
+/* 面板内的按钮组横向排列，避免一列按钮把卡片撑高。 */
+.factledger-body .factledger-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* 泄露候选：说明文字在左，两个按钮在右侧同排；窄屏时按钮整体换行但仍并排。 */
+.factledger-body .factledger-leak-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    margin: 2px 0;
+    font-size: 0.85em;
+}
+
+.factledger-body .factledger-leak-text {
+    flex: 1 1 180px;
+    min-width: 0;
+    opacity: 0.65;
+    overflow-wrap: anywhere;
+}
+
+.factledger-body .factledger-leak-actions {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 4px;
+}
+
+.factledger-body .factledger-actions .menu_button,
+.factledger-body .factledger-leak-actions .menu_button {
+    flex: 0 0 auto;
+    width: auto;
+}
+
 .factledger-footer {
     display: flex;
     flex-wrap: wrap;
@@ -467,13 +503,28 @@
     user-select: none;
 }
 
+.factledger-statusbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+}
+
+.factledger-statusbar-settle,
 .factledger-statusbar-open {
     cursor: pointer;
     opacity: 0.75;
+    white-space: nowrap;
 }
 
+.factledger-statusbar-settle:hover,
 .factledger-statusbar-open:hover {
     opacity: 1;
+}
+
+.factledger-statusbar-settle.disabled {
+    cursor: default;
+    opacity: 0.35;
 }
 
 /* Shown while the ledger is still extracting the latest turn. */

@@ -1910,7 +1910,10 @@ function renderStatusBar() {
     bar.innerHTML = `
         <div class="factledger-statusbar-top">
             <strong>${escapeHtml(protagonist.name || protagonist.id || '事实台账')}</strong>
-            <span class="factledger-statusbar-open" title="打开完整台账">打开台账</span>
+            <div class="factledger-statusbar-actions">
+                <span class="factledger-statusbar-settle ${settlePending ? 'disabled' : ''}" title="立即结算本幕">结算本幕</span>
+                <span class="factledger-statusbar-open" title="打开完整台账">打开台账</span>
+            </div>
         </div>
         ${loading}
         ${errorNotice}
@@ -1934,6 +1937,10 @@ function renderStatusBar() {
     `;
 
     bar.querySelector('.factledger-statusbar-open')?.addEventListener('click', () => togglePanel(true));
+    bar.querySelector('.factledger-statusbar-settle')?.addEventListener('click', () => {
+        if (settlePending) return;
+        settleLedger({ manual: true });
+    });
     bar.querySelectorAll('.factledger-statusbar-panel').forEach((panelEl) => {
         panelEl.querySelector('.factledger-statusbar-head')?.addEventListener('click', () => {
             const key = panelEl.dataset.panel;
@@ -1978,10 +1985,12 @@ function renderHealth(body) {
         <div class="factledger-card">
             <div><strong>泄露检测</strong> ${leaks.length ? '<span class="factledger-badge err">有泄露</span>' : '<span class="factledger-badge ok">正常</span>'}</div>
             ${leaks.length ? leaks.map((leak, index) => `
-                <div class="factledger-muted">
-                    ${escapeHtml(leak.characterName || leak.character || '')}：${escapeHtml(leak.label || leak.factText || leak.fact || '')}
-                    <button class="menu_button" data-leak-ack="${index}">设为已知</button>
-                    <button class="menu_button" data-leak-dismiss="${index}" title="仅清除本条记录，台账不变；叙事者下次仍可能越界。反复出现时建议设为已知或修正提取规则。">忽略</button>
+                <div class="factledger-leak-row">
+                    <span class="factledger-leak-text">${escapeHtml(leak.characterName || leak.character || '')}：${escapeHtml(leak.label || leak.factText || leak.fact || '')}</span>
+                    <span class="factledger-leak-actions">
+                        <button class="menu_button" data-leak-ack="${index}">设为已知</button>
+                        <button class="menu_button" data-leak-dismiss="${index}" title="仅清除本条记录，台账不变；叙事者下次仍可能越界。反复出现时建议设为已知或修正提取规则。">忽略</button>
+                    </span>
                 </div>
             `).join('') : '<div class="factledger-muted">无</div>'}
             <div class="factledger-actions" style="margin-top:6px;">

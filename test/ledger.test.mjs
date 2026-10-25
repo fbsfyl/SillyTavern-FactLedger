@@ -2842,6 +2842,14 @@ test('set_scene 的 advance 由代码累加到 day', () => {
     assert.equal(result.state.scene.day, 93);
 });
 
+test('提取提示只让与主角直接对话的角色进关系栏', () => {
+    const { system } = buildExtractionPrompt(createEmptyState(), []);
+    assert.match(system, /只记录与主角直接对话的角色/);
+    assert.match(system, /旁白一笔带过的路人/);
+    assert.match(system, /participants 只写当前与主角直接对话的人/);
+    assert.match(system, /set_relation 只写与主角直接对话的人/);
+});
+
 test('场景时间统一成日期 + 时辰，旧数据只取时辰', () => {
     assert.equal(sceneTimeLabel({ day: 1, time: '午时' }), '第1年1月1日 · 午时');
     assert.equal(sceneTimeLabel({ day: 31, time: '夜里' }), '第1年2月1日 · 夜里');

@@ -1,7 +1,14 @@
-﻿# 更新日志
+﻿﻿# 更新日志
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+
+## 0.16.3
+
+- 关系栏只收与主角直接对话的角色；旁白一笔带过的路人、远处围观者、只被提到名字的人不再进 `participants`，也不建角色档案
+- 健康页的泄露候选按钮改为横向排列，减少卡片高度
+- 状态栏的「打开台账」旁新增「结算本幕」按钮，结算进行中自动禁用
+- 修复 `package.json` 的双 BOM 导致 `node --check` 报 `Invalid package config`
 
 ## 0.16.2
 
