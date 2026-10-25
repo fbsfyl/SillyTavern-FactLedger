@@ -3,6 +3,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
 
+## 0.16.2
+
+- 时间规范化：状态栏、注入与历史统一显示「第X年X月X日 · 时辰」，日期由 `scene.day` 从开局第 1 天推算（30 天/月，12 月/年）
+- `scene.time` 只写时辰/时段，不再写年月日或季节；旧数据里的完整日期只取其中的时辰
+- 时间跳跃改为 `scene.advance` 单位：模型只写 `years/months/weeks/days`，由代码累加到内部 `day`（过夜 days:1、一周 weeks:1、三个月 months:3、两年 years:2），不再让模型自己乘 30/360
+- 首次结算没有 `day` 时按第 1 天起算，状态栏从开局就有日期
+- 旧版 `genreHint`（含 technique/location/status 或事件记录）在加载时自动替换成当前预设
+
 ## 0.16.1
 
 - 题材字段彻底下沉到 `lib/genres.js`：通用提取提示不再写死修仙字段；技能/能力的叫法（功法/神通、技能/特长……）由预设传入

@@ -52,7 +52,8 @@
     }
   },
   "scene": {
-    "time": "第三日 夜",
+    "time": "夜里",
+    "day": 3,
     "place": "黑风寨",
     "participants": ["user", "su_wan"]
   },
@@ -223,7 +224,7 @@
 
 ```json
 {
-  "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["user", "su_wan"] },
+  "scene": { "time": "夜里", "advance": { "days": 2 }, "place": "黑风寨", "participants": ["user", "su_wan"] },
   "ops": [
     { "op": "set", "character": "user", "field": "realm", "value": "炼气七层", "validFrom": "第三日 夜", "evidence": "msg:87", "confidence": 0.9 },
     { "op": "add_item", "character": "user", "item": { "id": "i_sword", "name": "青锋剑" }, "validFrom": "第一日 晨", "evidence": "msg:2", "confidence": 0.9 },
@@ -234,7 +235,7 @@
     { "op": "move_item", "item": "i_sword", "to": "su_wan", "validFrom": "第四日 晨", "evidence": "msg:90", "confidence": 0.9 },
     { "op": "set_relation", "from": "user", "to": "su_wan", "type": "同门", "validFrom": "第五日 夜", "evidence": "msg:120", "confidence": 0.9 },
     { "op": "reveal", "item": "i_orb", "to": "su_wan", "method": "战斗中被迫使用", "validFrom": "第三日 夜", "evidence": "msg:92", "confidence": 0.95 },
-    { "op": "set_scene", "scene": { "time": "第三日 夜", "place": "黑风寨", "participants": ["user", "su_wan"] } }
+    { "op": "set_scene", "scene": { "time": "夜里", "advance": { "days": 2 }, "place": "黑风寨", "participants": ["user", "su_wan"] } }
   ]
 }
 ```

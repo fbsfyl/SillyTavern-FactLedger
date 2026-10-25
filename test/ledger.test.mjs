@@ -24,6 +24,10 @@ import {
     knowsEntity,
     ensureCharacterRecord,
     promotePublicEntries,
+    storyDate,
+    formatStoryDate,
+    sceneTimeLabel,
+    resolveSceneDay,
 } from '../lib/ledger.js';
 import { DEFAULT_GENRE, getGenrePreset, listGenrePresets } from '../lib/genres.js';
 
@@ -2798,4 +2802,62 @@ test('adjust_item 新建物品时默认不是货币', () => {
     const item = result.state.characters.user.items.find((entry) => entry.id === 'i_x');
     assert.equal(item.kind, 'item');
     assert.equal(item.quantity, 2);
+});
+
+test('故事日期从开局起按年月日推算', () => {
+    assert.deepEqual(storyDate(1), { year: 1, month: 1, day: 1 });
+    assert.deepEqual(storyDate(30), { year: 1, month: 1, day: 30 });
+    assert.deepEqual(storyDate(31), { year: 1, month: 2, day: 1 });
+    assert.deepEqual(storyDate(361), { year: 2, month: 1, day: 1 });
+    assert.equal(formatStoryDate(1), '第1年1月1日');
+});
+
+test('时间跳跃按单位累加，不需要模型自己算天数', () => {
+    assert.equal(resolveSceneDay(1, { advance: { days: 1 } }), 2);
+    assert.equal(resolveSceneDay(10, { advance: { weeks: 1 } }), 17);
+    assert.equal(resolveSceneDay(3, { advance: { months: 3 } }), 93);
+    assert.equal(resolveSceneDay(10, { advance: { years: 2 } }), 730);
+    assert.equal(resolveSceneDay(10, { advance: { years: 1, months: 2, weeks: 1, days: 1 } }), 438);
+    assert.equal(resolveSceneDay(10, { day: 42 }), 42);
+    assert.equal(resolveSceneDay(null, { advance: { days: 1 } }), 2);
+    assert.equal(resolveSceneDay(10, { advance: {} }), 10);
+});
+
+test('提取提示用 advance 单位，不让模型自己算天数', () => {
+    const { system } = buildExtractionPrompt(createEmptyState(), []);
+    assert.match(system, /scene\.advance/);
+    assert.match(system, /\{days:1\}/);
+    assert.match(system, /\{weeks:1\}/);
+    assert.match(system, /\{months:N\}/);
+    assert.match(system, /\{years:N\}/);
+    assert.doesNotMatch(system, /N 个月 \+30×N/);
+});
+
+test('set_scene 的 advance 由代码累加到 day', () => {
+    const state = createEmptyState();
+    state.scene = { time: '', day: 3, place: '', participants: [] };
+    const result = run(state, [
+        { op: 'set_scene', scene: { time: '清晨', advance: { months: 3 }, place: '药铺', participants: ['user'] }, evidence: 'msg:0', confidence: 0.9 },
+    ]);
+    assert.equal(result.state.scene.day, 93);
+});
+
+test('场景时间统一成日期 + 时辰，旧数据只取时辰', () => {
+    assert.equal(sceneTimeLabel({ day: 1, time: '午时' }), '第1年1月1日 · 午时');
+    assert.equal(sceneTimeLabel({ day: 31, time: '夜里' }), '第1年2月1日 · 夜里');
+    assert.equal(sceneTimeLabel({ day: 1, time: '秋·九月初七·午时' }), '第1年1月1日 · 午时');
+    assert.equal(sceneTimeLabel({ day: 1, time: '' }), '第1年1月1日');
+    assert.equal(sceneTimeLabel({ day: null, time: '第三日 夜' }), '夜');
+    assert.equal(sceneTimeLabel({ day: null, time: '' }), '');
+});
+
+test('注入的场景时间用年月日，而不是模型给的日期串', () => {
+    const state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main', access: 'protagonist',
+        state: {}, items: [], relations: [], skills: [], abilities: [],
+    };
+    state.scene = { time: '午时', day: 31, place: '客栈', participants: ['user'] };
+    const text = assembleInjection(state, { activeCharacterIds: ['user'], protagonistId: 'user' });
+    assert.match(text, /时间：第1年2月1日 · 午时/);
 });

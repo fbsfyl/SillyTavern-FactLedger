@@ -29,6 +29,8 @@ import {
     normalizeAccess,
     isPlaceholderPersonaName,
     promotePublicEntries,
+    sceneTimeLabel,
+    resolveSceneDay,
 } from './lib/ledger.js';
 import { DEFAULT_GENRE, GENRE_PRESETS, getGenrePreset, listGenrePresets } from './lib/genres.js';
 import { classifyExtractionFailure, failureMessage } from './lib/refusal.js';
@@ -68,6 +70,9 @@ const DEFAULT_SETTINGS = {
     // 每 N 条结算过的消息，把主角仍公开的字段/物品/功法/神通升到朋友级；0 = 关闭。
     publicPromoteInterval: 20,
 };
+
+// 旧版默认题材提示里还有已删除的 technique/location/status 与事件记录；命中这些词就视为旧默认。
+const LEGACY_HINT_MARKERS = ['technique（功法）', 'location（地点）', 'status（状态）', 'knownBy', '事件按「问题'];
 
 const TABS = [
     { id: 'characters', label: '角色' },
@@ -197,7 +202,9 @@ function getSettings() {
     if (!settings.genrePreset || !GENRE_PRESETS[settings.genrePreset]) {
         settings.genrePreset = DEFAULT_GENRE;
     }
-    if (typeof settings.genreHint !== 'string') {
+    // 旧版默认提示含已删除字段（technique/location/status）或事件记录；命中就换回当前预设。
+    if (typeof settings.genreHint !== 'string'
+        || LEGACY_HINT_MARKERS.some((marker) => settings.genreHint.includes(marker))) {
         settings.genreHint = getGenrePreset(settings.genrePreset).hint;
     }
     // 旧版默认规则里还有已删除的【未了结】；只在仍是旧默认时替换，用户改过的不动。
@@ -793,10 +800,8 @@ async function settleLedger(options = {}) {
         const protagonistAliases = [...PROTAGONIST_ALIASES, ctx.name1].filter(Boolean);
         // 场景日期先落进 scene：档位冷却和「最近同场」都要用当天的 day。
         const parsedScene = parsed.scene && typeof parsed.scene === 'object' ? parsed.scene : null;
-        const parsedDay = (() => {
-            const number = Number.parseFloat(String(parsedScene?.day ?? ''));
-            return Number.isFinite(number) ? Math.round(number) : null;
-        })();
+        // 模型只写 advance 的单位，换算和累加由这里做。
+        const parsedDay = parsedScene ? resolveSceneDay(state.scene.day, parsedScene) : null;
         const baseState = parsedDay === null || parsedDay === state.scene.day
             ? state
             : { ...state, scene: { ...state.scene, day: parsedDay } };
@@ -835,8 +840,8 @@ async function settleLedger(options = {}) {
         if (parsed.scene && typeof parsed.scene === 'object') {
             nextState.scene = {
                 time: parsed.scene.time || nextState.scene.time || '',
-                // 漏写 day 时沿用旧值，别让一次空字段把日期抹掉。
-                day: parsedDay ?? nextState.scene.day ?? null,
+                // 漏写 day 时沿用旧值；第一次结算还没有 day 就从开局（第 1 天）起算。
+                day: parsedDay ?? nextState.scene.day ?? 1,
                 place: parsed.scene.place || nextState.scene.place || '',
                 participants: Array.isArray(parsed.scene.participants)
                     ? parsed.scene.participants
@@ -854,6 +859,8 @@ async function settleLedger(options = {}) {
                 if (person && nextState.scene.day !== null) person.lastSeenDay = nextState.scene.day;
             }
         }
+        // 开局（或旧数据）还没有内部日期时，从第 1 天起算。
+        if (nextState.scene.day === null) nextState.scene.day = 1;
         const lastIndex = Number.isFinite(to) ? to : ctx.chat.length - 1;
         const prefixHashes = computePrefixHashes(ctx.chat);
         const history = (nextState.meta.history || []).filter((record) => Number(record?.to) !== lastIndex);
@@ -1435,8 +1442,9 @@ function renderHistory(body) {
             const personNames = (scene.participants || [])
                 .map((participant) => displayName(state, participant))
                 .filter(Boolean);
+            const sceneTime = sceneTimeLabel(scene);
             const meta = [
-                scene.time ? `时间：${scene.time}` : '',
+                sceneTime ? `时间：${sceneTime}` : '',
                 scene.place ? `地点：${scene.place}` : '',
                 personNames.length ? `在场：${personNames.join('、')}` : '',
             ].filter(Boolean).join('｜');
@@ -1754,7 +1762,7 @@ function renderStatusBar() {
     if (displayName) personalLines.push(`${preset.fieldLabels?.name || '姓名'}：${displayName}`);
 
     const scenePlace = state.scene?.place || '';
-    worldLines.push(`时间：${state.scene?.time || '未知'}`);
+    worldLines.push(`时间：${sceneTimeLabel(state.scene) || '未知'}`);
     worldLines.push(`地点：${scenePlace || '未知'}`);
 
     // Show the genre's standard fields even when the ledger has no value yet,
