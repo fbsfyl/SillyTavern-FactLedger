@@ -25,7 +25,7 @@ import {
     ensureCharacterRecord,
     promotePublicEntries,
 } from '../lib/ledger.js';
-import { DEFAULT_GENRE, getGenrePreset } from '../lib/genres.js';
+import { DEFAULT_GENRE, getGenrePreset, listGenrePresets } from '../lib/genres.js';
 
 function run(state, ops, options = {}) {
     return applyOps(state, ops, { confidenceThreshold: 0.7, reviewThreshold: 0.5, ...options });
@@ -404,7 +404,7 @@ test('主角秘密字段不进公开块，只进秘密知情', () => {
         {
             op: 'set',
             character: 'lin_yuan',
-            field: 'location',
+            field: 'sect',
             value: '青云宗',
             validFrom: 'ch12',
             evidence: 'msg:1',
@@ -420,7 +420,7 @@ test('主角秘密字段不进公开块，只进秘密知情', () => {
     const blockEnd = text.indexOf('【秘密知情】', blockStart);
     const publicBlock = text.slice(blockStart, blockEnd);
 
-    assert.match(publicBlock, /location：青云宗/);
+    assert.match(publicBlock, /sect：青云宗/);
     assert.doesNotMatch(publicBlock, /realm：筑基一层/);
     assert.match(text, /- 林远 · realm：筑基一层 ｜ 主角级；只有你知道/);
 });
@@ -740,6 +740,7 @@ test('assembleInjection 把功法与神通分开显示', () => {
         activeCharacterIds: ['lin_yuan'],
         protagonistId: 'lin_yuan',
         skillLabel: '功法',
+        abilityLabel: '神通',
     });
     assert.match(text, /功法：青木诀\(第三重\)/);
     assert.match(text, /神通：御风诀\(入门\)/);
@@ -774,6 +775,7 @@ test('秘密神通与其他秘密一样隔离注入', () => {
         activeCharacterIds: ['lin_yuan', 'su_wan'],
         protagonistId: 'lin_yuan',
         skillLabel: '功法',
+        abilityLabel: '神通',
     });
     assert.match(text, /神通：裂空剑\(小成\)/);
     assert.doesNotMatch(text, /神通：.*御风诀/);
@@ -799,13 +801,20 @@ test('代码层拒绝给 NPC 建功法或神通', () => {
 });
 
 test('提取提示严格限制神通的添加来源', () => {
-    const { system } = buildExtractionPrompt(createEmptyState(), []);
+    const { system } = buildExtractionPrompt(createEmptyState(), [], { skillLabel: '功法', abilityLabel: '神通' });
     assert.match(system, /只有两种情况写 add_ability/);
     assert.match(system, /主角自己给招式起名/);
-    assert.match(system, /正文明确写主角学到、习得或得到某门神通/);
+    assert.match(system, /正文明确写主角学到、习得或得到新的神通/);
     assert.match(system, /新神通默认 access:"protagonist"/);
     assert.match(system, /NPC 只保留最小档案/);
     assert.match(system, /不要给 NPC 单独建功法、神通、物品或秘密档案/);
+});
+
+test('技能与能力的叫法跟着题材，不写死修仙词', () => {
+    const urban = buildExtractionPrompt(createEmptyState(), [], { skillLabel: '技能/专长', abilityLabel: '特长' }).system;
+    assert.match(urban, /技能\/专长用 add_skill/);
+    assert.match(urban, /特长用 add_ability/);
+    assert.doesNotMatch(urban, /功法|神通/);
 });
 
 test('秘密功法可以用 set_skill 改档，并用 reveal 放宽', () => {
@@ -1385,7 +1394,7 @@ test('提取提示要求正文明确写才知道', () => {
 
 test('提取提示默认不公开主角的灵根和体质', () => {
     const { system } = buildExtractionPrompt(createEmptyState(), []);
-    assert.match(system, /灵根、体质默认只有主角知道/);
+    assert.match(system, /灵根、体质）默认只有主角知道/);
     assert.match(system, /开场旁白交代给玩家的信息不等于在场 NPC 已知/);
     assert.match(system, /当众测灵、摸骨、神识扫过之后，才写 public/);
 });
@@ -1558,6 +1567,16 @@ test('提取提示要求按正文双向记录知情（重复覆盖）', () => {
     const { system } = buildExtractionPrompt(createEmptyState(), []);
     assert.match(system, /主动告知、主动展示、明确承认 → reveal/);
     assert.match(system, /正文明确写某人不知道\/被瞒着/);
+});
+
+test('提取提示要求修炼至少 +1，且不把日常修炼当噪声', () => {
+    const { system } = buildExtractionPrompt(createEmptyState(), []);
+    assert.match(system, /出现该题材定义的进度行为/);
+    assert.match(system, /至少 \+1/);
+    assert.match(system, /被打断也写 \+1/);
+    assert.doesNotMatch(system, /日常修炼、一次性动作/);
+    assert.match(getGenrePreset('xianxia').hint, /出现修炼行为/);
+    assert.match(getGenrePreset('xianxia').hint, /至少 \+1/);
 });
 
 test('注入渲染 NPC 对玩家的称呼', () => {
@@ -2603,4 +2622,180 @@ test('collectAssistantText 只拼接本轮 AI 消息', () => {
     assert.equal(collectAssistantText(chat, 1, 3), 'AI 1\nAI 3');
     assert.equal(collectAssistantText(chat, 4, 4), 'AI 4');
     assert.equal(collectAssistantText(chat, 0, 1), 'AI 1');
+});
+
+// ---------------------------------------------------------------- 旧字段清理与题材分离
+
+test('旧 technique 字段迁移成 skills，旧 location 补进 scene.place', () => {
+    const state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main',
+        state: {
+            technique: { current: '引灵锻体', history: [], evidence: 'msg:3', confidence: 0.7, access: 'protagonist' },
+            location: { current: '青云宗', history: [] },
+        },
+        items: [], relations: [], skills: [], abilities: [],
+    };
+    state.scene = { time: '', day: 1, place: '', participants: ['user'] };
+
+    const normalized = normalizeState(state);
+    assert.equal(normalized.characters.user.state.technique, undefined);
+    assert.equal(normalized.characters.user.state.location, undefined);
+    assert.equal(normalized.scene.place, '青云宗');
+    assert.equal(normalized.characters.user.skills.length, 1);
+    assert.equal(normalized.characters.user.skills[0].name, '引灵锻体');
+    assert.equal(normalized.characters.user.skills[0].access, 'protagonist');
+
+    // 幂等：再次归一化不会迁移出第二份功法。
+    const again = normalizeState(JSON.parse(JSON.stringify(normalized)));
+    assert.equal(again.characters.user.skills.length, 1);
+});
+
+test('NPC 不记录进度与功法神通，旧数据加载时清掉', () => {
+    const state = createEmptyState();
+    state.characters.user = { id: 'user', name: '你', tier: 'main', state: {}, items: [], relations: [], skills: [], abilities: [] };
+    state.characters.su = {
+        id: 'su', name: '苏绾', access: 'friend', state: {
+            progress: { current: 40, history: [] },
+            technique: { current: '青木诀', history: [] },
+        },
+        items: [], relations: [],
+        skills: [{ id: 'sk_a', name: '青木诀' }],
+        abilities: [{ id: 'ab_a', name: '御风诀' }],
+    };
+    const normalized = normalizeState(state);
+    assert.equal(normalized.characters.su.state.progress, undefined);
+    assert.equal(normalized.characters.su.state.technique, undefined);
+    assert.equal(normalized.characters.su.skills.length, 0);
+    assert.equal(normalized.characters.su.abilities.length, 0);
+
+    const result = run(createEmptyState(), [
+        { op: 'set', character: '执事甲', field: 'progress', value: 10, evidence: 'msg:0', confidence: 0.9 },
+    ]);
+    assert.equal(result.rejected.length, 1);
+    assert.match(result.rejected[0].reason, /NPC/);
+    // 被拒的 op 不该留下空壳角色。
+    assert.equal(result.state.characters['执事甲'], undefined);
+});
+
+test('location 与 technique 字段被拒绝，提示使用 scene.place 和 add_skill', () => {
+    const result = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'location', value: '客栈', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'technique', value: '青木诀', evidence: 'msg:0', confidence: 0.9 },
+    ]);
+    assert.equal(result.rejected.length, 2);
+    assert.match(result.rejected[0].reason, /set_scene/);
+    assert.match(result.rejected[1].reason, /add_skill/);
+});
+
+test('题材字段与关系词只在各自模板里，通用提示不写死修仙字段', () => {
+    const { system } = buildExtractionPrompt(createEmptyState(), []);
+    assert.doesNotMatch(system, /technique（功法）/);
+    assert.doesNotMatch(system, /location（地点）/);
+    assert.doesNotMatch(system, /道侣、生死之交/);
+
+    const xianxia = getGenrePreset('xianxia').hint;
+    assert.match(xianxia, /physique/);
+    assert.match(xianxia, /family/);
+    assert.doesNotMatch(xianxia, /technique|location/);
+
+    const urban = getGenrePreset('urban').hint;
+    assert.match(urban, /上司、下属/);
+    assert.match(urban, /rank（职位）/);
+    assert.doesNotMatch(urban, /location/);
+});
+
+test('set 不能写 skills、abilities 等结构字段', () => {
+    const result = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'skills', value: 'x', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'abilities', value: 'x', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'items', value: 'x', evidence: 'msg:0', confidence: 0.9 },
+    ]);
+    assert.equal(result.rejected.length, 3);
+    assert.match(result.rejected[0].reason, /专用 op/);
+});
+
+test('有主角时，残留 tier:main 的 NPC 也不能建功法', () => {
+    const state = createEmptyState();
+    state.meta.protagonistId = 'lin_yuan';
+    state.characters.lin_yuan = {
+        id: 'lin_yuan', name: '林远', tier: 'main', access: 'protagonist',
+        state: {}, items: [], relations: [], skills: [], abilities: [],
+    };
+    state.characters.wang = {
+        id: 'wang', name: '王掌柜', tier: 'main', access: 'public',
+        state: {}, items: [], relations: [], skills: [], abilities: [],
+    };
+    const result = run(state, [
+        { op: 'add_skill', character: '王掌柜', skill: { name: '青木诀' }, evidence: 'msg:0', confidence: 0.9 },
+    ]);
+    assert.equal(result.rejected.length, 1);
+    assert.match(result.rejected[0].reason, /NPC/);
+    assert.equal(result.state.characters.wang.skills.length, 0);
+});
+
+test('合并进 NPC 时不带功法、神通与进度', () => {
+    const state = createEmptyState();
+    state.meta.protagonistId = 'user';
+    state.characters.tmp = {
+        id: 'tmp', name: '执事甲', tier: 'npc', access: 'public',
+        state: { progress: { current: 30, history: [] } },
+        items: [], relations: [],
+        skills: [{ id: 'sk_a', name: '青木诀', validTo: null, access: 'public' }],
+        abilities: [{ id: 'ab_a', name: '御风诀', validTo: null, access: 'public' }],
+    };
+    state.characters.real = {
+        id: 'real', name: '周执事', tier: 'npc', access: 'public',
+        state: {}, items: [], relations: [], skills: [], abilities: [],
+    };
+    const result = run(state, [
+        { op: 'merge_character', from: 'tmp', to: 'real', evidence: 'msg:0', confidence: 0.9 },
+    ]);
+    const merged = result.state.characters.real;
+    assert.equal(merged.skills.length, 0);
+    assert.equal(merged.abilities.length, 0);
+    assert.equal(merged.state.progress, undefined);
+});
+
+test('NPC 只允许性别与题材的等级字段', () => {
+    const result = run(createEmptyState(), [
+        { op: 'set', character: '苏婉', field: 'gender', value: '女', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: '苏婉', field: 'realm', value: '练气初期', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: '苏婉', field: 'appearance', value: '月白长裙', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: '苏婉', field: 'age', value: '二十出头', evidence: 'msg:0', confidence: 0.9 },
+    ], { npcFields: ['realm'] });
+    const npc = findCharacter(result.state, '苏婉');
+    assert.equal(npc.state.gender.current, '女');
+    assert.equal(npc.state.realm.current, '练气初期');
+    assert.equal(npc.state.appearance, undefined);
+    assert.equal(npc.state.age, undefined);
+    assert.equal(result.rejected.filter((item) => /NPC 只记性别与等级字段/.test(item.reason)).length, 2);
+});
+
+test('每个题材都声明等级字段', () => {
+    for (const { id } of listGenrePresets()) {
+        assert.equal(typeof getGenrePreset(id).levelField, 'string', id);
+    }
+    assert.equal(getGenrePreset('xianxia').levelField, 'realm');
+    assert.equal(getGenrePreset('urban').levelField, 'rank');
+});
+
+test('数量归零的货币不再注入', () => {
+    const result = run(createEmptyState(), [
+        { op: 'add_item', character: 'user', item: { name: '灵石', kind: 'currency', quantity: 10, unit: '枚' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'adjust_item', character: 'user', item: '灵石', delta: -10, evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    const state = result.state;
+    state.scene = { time: '夜', place: '客栈', participants: ['user'] };
+    const text = assembleInjection(state, { activeCharacterIds: ['user'], protagonistId: 'user' });
+    assert.doesNotMatch(text, /灵石/);
+});
+
+test('adjust_item 新建物品时默认不是货币', () => {
+    const result = run(createEmptyState(), [
+        { op: 'adjust_item', character: 'user', item: { id: 'i_x', name: '符纸' }, delta: 2, evidence: 'msg:0', confidence: 0.9 },
+    ]);
+    const item = result.state.characters.user.items.find((entry) => entry.id === 'i_x');
+    assert.equal(item.kind, 'item');
+    assert.equal(item.quantity, 2);
 });

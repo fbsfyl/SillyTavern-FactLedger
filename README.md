@@ -2,7 +2,7 @@
 
 [![release](https://img.shields.io/github/v/release/fbsfyl/SillyTavern-FactLedger?label=release)](https://github.com/fbsfyl/SillyTavern-FactLedger/releases)
 [![license](https://img.shields.io/github/license/fbsfyl/SillyTavern-FactLedger)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-166-brightgreen)](test/ledger.test.mjs)
+[![tests](https://img.shields.io/badge/tests-167-brightgreen)](test/ledger.test.mjs)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.19%2B-5b4ee6)](https://github.com/SillyTavern/SillyTavern)
 
 面向 SillyTavern 文字冒险 / 角色扮演的结构化记忆扩展：**当前状态台账 + 双时态历史 + 秘密知情约束**。
@@ -45,11 +45,11 @@
 **A. 事实台账**
 - 只记四类当前状态：属性、物品/金钱、关系、功法与神通。
 - 神通只记两种来源：主角自己给招式起名，或正文明确写主角学到/习得/得到某门神通；旁白里没名字的动作、临时发力、NPC 的神通都不建档。主角神通默认主角级，公开演示或公开传授后才显式放宽。
-- NPC 只保留最小档案；代码层直接拒绝给 NPC 写 `add_skill` / `add_ability`，不靠模型自觉。
+- NPC 只保留最小档案；代码层拒绝给 NPC 写 `add_skill` / `add_ability`，也只放行性别与题材的等级字段（修仙=境界，都市=职位），年龄、外貌、名望等不落账。
 - 「谁拿了什么」以主角为准：主角持有什么、失去了什么、被谁拿走。NPC 的私人物品不需要单独建账。
 - 每条都有生效时间、证据和置信度；采用双时态，编辑、删除、swipe、分支、检查点都能回放。
-- 场景记录时间、天数、地点、在场者；状态变化能据此算出间隔。
-- 不记天气、寒暄、点头、日常修炼、一次性动作，也不记事件与「秘密」条目。
+- 场景记录时间、天数、地点、在场者；状态变化能据此算出间隔。地点只写在 `scene.place`，不占 `state` 字段。
+- 不记天气、寒暄、点头等与状态无关的一次性动作，也不记事件与「秘密」条目。修炼只更新 `progress`（至少 +1），不另写事件。
 
 **B. 认知隔离**
 - 主角的所有可保密条目都支持 `access`（主角级/亲密级/朋友级/公开级）：字段、物品、关系、功法、神通。
@@ -129,7 +129,7 @@ SillyTavern-FactLedger/
 │   ├── ledger.js          # 纯逻辑：双时态/认知/注入/泄露/健康检查
 │   └── genres.js          # 题材预设
 ├── test/
-│   └── ledger.test.mjs    # 166 个单元测试
+│   └── ledger.test.mjs    # 167 个单元测试
 ├── docs/
 │   └── DESIGN.md          # 数据模型 / 提取协议 / 注入装配
 ├── CHANGELOG.md
@@ -215,14 +215,14 @@ git clone https://github.com/fbsfyl/SillyTavern-FactLedger
 
 | 预设 | 常用 state 字段 |
 |---|---|
-| 修仙（默认） | realm（境界）、technique（功法）、spiritRoot（灵根）、sect（宗门）、location、situation、health |
-| 都市 | rank（职位）、wealth（财力）、network（人脉）、company（公司）、location、situation、health |
-| 科幻 | rank（军衔）、cyberware（义体等级）、clearance（权限）、ship（舰船）、location、situation、health |
-| 悬疑 | suspicion（嫌疑度）、motive（动机）、alibi（不在场证明）、location、situation、health |
-| 言情 | affection（好感度）、stage（关系阶段）、misunderstanding（误会）、location、situation、health |
+| 修仙（默认） | realm（境界）、progress（境界进度）、spiritRoot（灵根）、physique（体质）、family（家族）、sect（宗门）、appearance、fame、health、situation、age、objective |
+| 都市 | rank（职位）、wealth（财力）、network（人脉）、company（公司）、appearance、fame、health、situation、age、objective |
+| 科幻 | rank（军衔）、cyberware（义体等级）、clearance（权限）、ship（舰船）、appearance、fame、health、situation、age、objective |
+| 悬疑 | suspicion（嫌疑度）、motive（动机）、alibi（不在场证明）、appearance、fame、health、situation、age、objective |
+| 言情 | affection（好感度）、stage（关系阶段）、misunderstanding（误会）、appearance、fame、health、situation、age、objective |
 | 自定义 | 由你自己填写 |
 
-切换预设时会自动填入对应的提示文本；你也可以在文本框里直接改写。注入层会**遍历角色 `state` 下的所有字段**，不只 `realm/technique/location`，所以临时新增 `rank`、`suspicion` 等字段也会显示。
+切换预设时会自动填入对应的提示文本；你也可以在文本框里直接改写。地点只记在 `scene.place`，功法/神通记在 `skills`/`abilities`，都不再占用 `state` 字段。注入层会**遍历角色 `state` 下的所有字段**，临时新增 `rank`、`suspicion` 等字段也会显示。
 
 每个预设还带 `fieldLabels` 和 `panelMap`：
 
@@ -340,7 +340,7 @@ NPC 自身的信息不做隔离，因此不会出现在这里。
    - **认知**：主角的秘密与谁知情
    - **日志**：版本日志与回放
    - **健康**：注入估算、泄露、健康告警、注入预览
-5. 需要手工修正时，点「编辑 JSON」在独立大弹窗里改完整台账（Ctrl+S 保存，Esc 关闭）。
+5. 需要手工修正时，点「编辑 JSON」在独立大弹窗里改完整台账：顶部可展开「编辑说明与常用改法」，Ctrl+S 保存，Esc 关闭。
 6. 定期用「导出 JSON」备份。
 
 ---

@@ -25,8 +25,6 @@
         },
         "gender": { "current": "男", "history": [] },
         "appearance": { "current": "清瘦，左手有旧伤", "history": [] },
-        "technique": { "current": "《青木诀》第三重", "history": [] },
-        "location": { "current": "青云宗·外门", "history": [] },
         "fame": { "current": "外门新秀", "history": [] },
         "situation": { "current": "黑风寨余党在逃", "history": [] }
       },
@@ -64,7 +62,8 @@
     "lastSettleAt": null,
     "lastError": "",
     "leaks": [],
-    "health": []
+    "protagonistId": "",
+    "history": []
   }
 }
 ```

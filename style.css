@@ -73,8 +73,7 @@
 #factledger_settings select,
 #factledger_settings textarea,
 #factledger_known_modal input:not([type="checkbox"]),
-#factledger_known_modal select,
-.factledger-body textarea {
+#factledger_known_modal select {
     color: var(--SmartThemeBodyColor, inherit);
     background-color: var(--black30a, rgba(0, 0, 0, 0.3));
     border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.45));
@@ -226,21 +225,9 @@
     font-size: 0.9em;
 }
 
-.factledger-body h4 {
-    margin: 6px 0;
-}
-
 .factledger-body .factledger-empty {
     opacity: 0.6;
     padding: 12px 0;
-}
-
-.factledger-body textarea {
-    width: 100%;
-    min-height: 160px;
-    font-family: monospace;
-    font-size: 0.85em;
-    box-sizing: border-box;
 }
 
 .factledger-body .factledger-card {
@@ -383,6 +370,43 @@
     margin-top: 8px;
 }
 
+/* JSON 编辑器的内联说明：默认折叠，不占编辑区。 */
+.factledger-json-help {
+    margin: 6px 0;
+    font-size: 0.82em;
+}
+
+.factledger-json-help summary {
+    cursor: pointer;
+    opacity: 0.8;
+    user-select: none;
+}
+
+.factledger-json-help-body {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.45));
+    border-radius: 6px;
+    background: var(--black30a, rgba(0, 0, 0, 0.3));
+    line-height: 1.55;
+    max-height: 28vh;
+    overflow: auto;
+}
+
+.factledger-json-help-body p {
+    margin: 4px 0;
+}
+
+.factledger-json-help-body ul {
+    margin: 4px 0 4px 18px;
+    padding: 0;
+}
+
+.factledger-json-help-body code {
+    font-family: var(--monoFontFamily, ui-monospace, SFMono-Regular, Consolas, monospace);
+    font-size: 0.95em;
+}
+
 .factledger-debug-content textarea {
     width: 100%;
     min-height: 360px;
@@ -410,32 +434,6 @@
 
 .factledger-modal-close:hover {
     opacity: 1;
-}
-
-.factledger-known-list {
-    margin: 8px 0;
-    max-height: 46vh;
-    overflow: auto;
-}
-
-.factledger-known-row {
-    display: grid;
-    grid-template-columns: 90px 110px 1fr 1fr;
-    gap: 6px;
-    align-items: center;
-    margin: 4px 0;
-}
-
-.factledger-known-row select,
-.factledger-known-row input {
-    width: 100%;
-    box-sizing: border-box;
-}
-
-.factledger-known-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 .factledger-statusbar {

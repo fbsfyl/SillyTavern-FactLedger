@@ -200,7 +200,8 @@ function getSettings() {
     if (typeof settings.genreHint !== 'string') {
         settings.genreHint = getGenrePreset(settings.genrePreset).hint;
     }
-    if (typeof settings.narrativeRules !== 'string') {
+    // 旧版默认规则里还有已删除的【未了结】；只在仍是旧默认时替换，用户改过的不动。
+    if (typeof settings.narrativeRules !== 'string' || settings.narrativeRules.includes('【未了结】')) {
         settings.narrativeRules = getGenrePreset(settings.genrePreset).narrativeRules || '';
     }
     return settings;
@@ -506,6 +507,7 @@ function buildInjectionText() {
         knowledgeGate: settings.knowledgeGate,
         showOthers: settings.showOthers,
         skillLabel: preset.skillLabel,
+        abilityLabel: preset.abilityLabel,
         fieldLabels: preset.fieldLabels,
         recentText,
         fieldOrder: preset.fieldOrder,
@@ -755,6 +757,8 @@ async function settleLedger(options = {}) {
             maxMessages: messages.length,
             newFrom,
             genreHint: settings.genreHint,
+            skillLabel: getGenrePreset(settings.genrePreset).skillLabel,
+            abilityLabel: getGenrePreset(settings.genrePreset).abilityLabel,
         });
         // 本轮结算最多 20 秒：首次请求、重试和解析失败重试共用这个截止时间。
         const extractionDeadline = Date.now() + EXTRACTION_TIMEOUT_MS;
@@ -806,6 +810,7 @@ async function settleLedger(options = {}) {
             reviewThreshold: 0.5,
             messageCount: ctx.chat.length,
             protagonistAliases,
+            npcFields: [getGenrePreset(settings.genrePreset).levelField].filter(Boolean),
         });
 
         const nextState = result.state;
@@ -902,12 +907,14 @@ async function settleLedger(options = {}) {
         // 泄露由代码检测，不依赖提取模型自报。
         const leakActive = (nextState.scene?.participants || [])
             .filter((id) => id && id !== (nextState.meta?.protagonistId || PROTAGONIST_ID));
+        const leakPreset = getGenrePreset(settings.genrePreset);
         nextState.meta.leaks = settings.leakCheck
             ? detectLeaks(
                 nextState,
                 collectAssistantText(ctx.chat, newFrom, lastIndex),
                 leakActive,
-                getGenrePreset(settings.genrePreset).fieldLabels,
+                leakPreset.fieldLabels,
+                { skillLabel: leakPreset.skillLabel, abilityLabel: leakPreset.abilityLabel },
             )
             : [];
         // 低置信 op 不落账，但要留一个入口：面板可以补采纳，否则等于静默丢弃。
@@ -1763,7 +1770,7 @@ function renderStatusBar() {
     }
     for (const field of orderedFields) {
         // progress 单独画进度条，不再作为一行文字重复出现；姓名已在最上面单独处理。
-        if (field === 'location' || field === 'progress' || field === 'name') continue;
+        if (field === 'progress' || field === 'name') continue;
         const entry = protagonist.state?.[field];
         const value = stateValue(entry);
         const meta = fieldMeta(field, entry, preset);
@@ -1778,7 +1785,7 @@ function renderStatusBar() {
     const progressValue = !progressLabel
         ? null
         : (Number.isFinite(progressRaw) ? Math.max(0, Math.min(100, Math.round(progressRaw))) : 0);
-    const realmValue = stateValue(protagonist.state?.realm);
+    const realmValue = preset.levelField ? stateValue(protagonist.state?.[preset.levelField]) : '';
     const progressBar = progressValue === null ? '' : `
         <div class="factledger-progress">
             <div class="factledger-progress-meta">
@@ -1836,7 +1843,7 @@ function renderStatusBar() {
             continue;
         }
         const gender = stateValue(npc.state?.gender);
-        const levelEntry = npc.state?.realm || npc.state?.rank || npc.state?.level || npc.state?.stage;
+        const levelEntry = preset.levelField ? npc.state?.[preset.levelField] : null;
         const level = stateValue(levelEntry);
         const tierText = ACCESS_LABELS[characterAccess(npc)] || characterAccess(npc);
         const ownRelation = (protagonist.relations || []).find((item) => item.validTo == null && item.target === pid);
@@ -1856,9 +1863,7 @@ function renderStatusBar() {
     }
 
     // 关系表头的等级列跟着题材走：修仙是境界，都市是职位，通用题材退回「等级」。
-    const levelLabel = ['realm', 'rank', 'level', 'stage']
-        .map((field) => preset.fieldLabels?.[field])
-        .find(Boolean) || '等级';
+    const levelLabel = (preset.levelField && preset.fieldLabels?.[preset.levelField]) || '等级';
 
     // 开局还没有主角记录时也要显示骨架（时间/地点/境界进度），而不是整条状态栏消失。
     const panels = [
@@ -1942,6 +1947,7 @@ function renderHealth(body) {
         knowledgeGate: settings.knowledgeGate,
         showOthers: settings.showOthers,
         skillLabel: preset.skillLabel,
+        abilityLabel: preset.abilityLabel,
         fieldLabels: preset.fieldLabels,
         recentText: '',
         fieldOrder: preset.fieldOrder,
@@ -2355,6 +2361,10 @@ function checkRecentLeaks() {
         lastAssistant.mes,
         active,
         getGenrePreset(getSettings().genrePreset).fieldLabels,
+        {
+            skillLabel: getGenrePreset(getSettings().genrePreset).skillLabel,
+            abilityLabel: getGenrePreset(getSettings().genrePreset).abilityLabel,
+        },
     );
     state.meta.leaks = leaks;
     saveState();
@@ -2375,6 +2385,20 @@ function openJsonEditor() {
                 <span class="factledger-modal-close" title="关闭">✕</span>
             </div>
             <div class="factledger-muted">保存前会做基本结构校验；改动较大时建议先导出备份。Ctrl+S 保存，Esc 关闭。</div>
+            <details class="factledger-json-help">
+                <summary>编辑说明与常用改法</summary>
+                <div class="factledger-json-help-body">
+                    <p><b>结构：</b><code>characters</code>（角色）、<code>scene</code>（场景）、<code>meta</code>（版本日志等）。主角固定 <code>id: "user"</code>。</p>
+                    <p><b>档位：</b><code>public</code>（人人皆知）&lt; <code>friend</code> &lt; <code>intimate</code> &lt; <code>protagonist</code>（只有你知道）。字段、物品、功法、神通、关系上都有 <code>access</code>。</p>
+                    <ul>
+                        <li>改谁知道：把该条目的 <code>"access"</code> 改成 <code>"friend"</code> / <code>"intimate"</code> / <code>"protagonist"</code>。</li>
+                        <li>改字段值：<code>characters.user.state.realm.current</code>。</li>
+                        <li>改称呼：<code>characters.user.relations[0].address</code>。</li>
+                        <li>加物品：复制 <code>characters.user.items</code> 里的一条，改 <code>id</code> / <code>name</code> / <code>quantity</code>。</li>
+                    </ul>
+                    <p><b>注意：</b>不要删掉 <code>characters</code>；改坏时先「取消」，再点「导出」备份。</p>
+                </div>
+            </details>
             <textarea id="factledger_json_editor" spellcheck="false">${escapeHtml(JSON.stringify(getState(), null, 2))}</textarea>
             <div class="factledger-actions">
                 <button class="menu_button" id="factledger_json_save">保存</button>
@@ -2541,8 +2565,7 @@ function registerEvents() {
     });
 
     const invalidateFrom = (index) => {
-        const changed = Number(index);
-        if (!Number.isFinite(changed)) return;
+        if (!Number.isFinite(Number(index))) return;
         restoreLedgerFromHistory('message-edited');
         refreshInjection();
         renderPanel();
