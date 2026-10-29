@@ -23,11 +23,15 @@ import {
     characterAccess,
     knowsEntity,
     ensureCharacterRecord,
+    seedProtagonistName,
     promotePublicEntries,
     storyDate,
     formatStoryDate,
     sceneTimeLabel,
     resolveSceneDay,
+    selectHistoryBranch,
+    recordMatchesChat,
+    backfillAnchors,
 } from '../lib/ledger.js';
 import { DEFAULT_GENRE, getGenrePreset, listGenrePresets } from '../lib/genres.js';
 
@@ -100,18 +104,17 @@ test('add_item + move_item：物品转手只保留一个当前持有人', () => 
     assert.equal(su[0].validTo, null);
 });
 
-test('set_relation 类型变化保留历史，称呼变化原地更新', () => {
+test('set_relation 类型变化保留历史', () => {
     let state = createEmptyState();
     let result = run(state, [
-        { op: 'set_relation', from: 'lin_yuan', to: 'su_wan', toName: '苏婉', type: '同门', address: '师妹', validFrom: 'ch02', evidence: 'msg:3', confidence: 0.9 },
+        { op: 'set_relation', from: 'lin_yuan', to: 'su_wan', toName: '苏婉', type: '同门', validFrom: 'ch02', evidence: 'msg:3', confidence: 0.9 },
     ]);
     state = result.state;
     result = run(state, [
-        { op: 'set_relation', from: 'lin_yuan', to: 'su_wan', toName: '苏婉', type: '同门', address: '师姐', validFrom: 'ch10', evidence: 'msg:60', confidence: 0.9 },
+        { op: 'set_relation', from: 'lin_yuan', to: 'su_wan', toName: '苏婉', type: '同门', validFrom: 'ch10', evidence: 'msg:60', confidence: 0.9 },
     ]);
     state = result.state;
     assert.equal(state.characters.lin_yuan.relations.length, 1);
-    assert.equal(state.characters.lin_yuan.relations[0].address, '师姐');
 
     result = run(state, [
         { op: 'set_relation', from: 'lin_yuan', to: 'su_wan', toName: '苏婉', type: '仇敌', validFrom: 'ch20', evidence: 'msg:120', confidence: 0.9 },
@@ -268,6 +271,11 @@ test('selectSettleMessages 只取新消息并带上下文', () => {
     const empty = selectSettleMessages([{ mes: '  ' }, { mes: 'ok' }], -1, { contextCount: 3 });
     assert.equal(empty.messages.length, 1);
     assert.equal(empty.messages[0].index, 1);
+
+    // 已经结算到最后一条时不再返回上下文：重复点结算不能把同一轮再加一遍。
+    const done = selectSettleMessages(chat, 9, { contextCount: 3 });
+    assert.equal(done.messages.length, 0);
+    assert.equal(selectSettleMessages(chat, 8, { contextCount: 3 }).messages.length > 0, true);
 });
 
 test('检测编辑/删除/分支导致的锚点失效', () => {
@@ -559,6 +567,57 @@ test('adjust_item 可为指定角色创建货币物品', () => {
     assert.equal(item.quantity, 30);
     assert.equal(item.kind, 'currency');
     assert.equal(item.holder, 'wang_shop');
+});
+
+test('多货币：贡献点独立记，clear_currency 可按名字只清一种', () => {
+    let state = createEmptyState();
+    let result = run(state, [
+        { op: 'add_item', character: 'lin_yuan', name: '林远', item: { id: 'i_spirit', name: '灵石', kind: 'currency', quantity: 100, unit: '枚' }, evidence: 'msg:1', confidence: 0.9 },
+        { op: 'add_item', character: 'lin_yuan', name: '林远', item: { id: 'i_contrib', name: '贡献点', kind: 'currency', quantity: 120, unit: '点' }, evidence: 'msg:2', confidence: 0.9 },
+    ]);
+    state = result.state;
+    const contrib = state.characters.lin_yuan.items.find((entry) => entry.id === 'i_contrib' && entry.validTo == null);
+    assert.equal(contrib.quantity, 120);
+    assert.equal(contrib.unit, '点');
+
+    state.characters.lin_yuan.tier = 'main';
+    state.scene = { time: '午时', place: '外门', participants: ['lin_yuan'] };
+    const text = assembleInjection(state, { tokenBudget: 3000, protagonistId: 'lin_yuan' });
+    assert.match(text, /灵石×100枚/);
+    assert.match(text, /贡献点×120点/);
+
+    // 只清贡献点：灵石还在。
+    result = run(state, [
+        { op: 'clear_currency', item: '贡献点', character: 'lin_yuan', evidence: 'msg:3', confidence: 0.9 },
+    ]);
+    state = result.state;
+    assert.equal(state.characters.lin_yuan.items.find((entry) => entry.id === 'i_contrib' && entry.validTo == null).quantity, 0);
+    assert.equal(state.characters.lin_yuan.items.find((entry) => entry.id === 'i_spirit' && entry.validTo == null).quantity, 100);
+
+    // 不写 item 才清全部货币。
+    result = run(state, [
+        { op: 'clear_currency', character: 'lin_yuan', evidence: 'msg:4', confidence: 0.9 },
+    ]);
+    state = result.state;
+    assert.equal(state.characters.lin_yuan.items.find((entry) => entry.id === 'i_spirit' && entry.validTo == null).quantity, 0);
+});
+
+test('货币 add_item 必须写数量，不允许占位 1 点', () => {
+    const result = run(createEmptyState(), [
+        { op: 'add_item', character: 'lin_yuan', name: '林远', item: { name: '贡献点', kind: 'currency', unit: '点' }, evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    assert.equal(result.rejected.length, 1);
+    assert.match(result.rejected[0].reason, /货币要写明数量/);
+});
+
+test('提取提示支持多种货币，题材提示点名贡献点', () => {
+    const { system, user } = buildExtractionPrompt(createEmptyState(), [], {
+        genreHint: getGenrePreset('xianxia').hint,
+    });
+    assert.match(system, /货币可以有多条/);
+    assert.match(system, /clear_currency \{item:"贡献点"\}/);
+    assert.match(user, /clear_currency \{character\?,item\?,reason\?\}/);
+    assert.match(user, /贡献点（点）/);
 });
 
 test('normalizeState 为旧物品补默认数量', () => {
@@ -1089,7 +1148,9 @@ test('玩家角色归一化为 user（你/我/玩家/主角/persona）', () => {
     assert.ok(result.state.characters.user);
     assert.equal(result.state.characters.user.name, '你');
     assert.equal(result.state.characters.user.tier, 'main');
-    assert.equal(findCharacter(result.state, '苏婉').relations[0].target, 'user');
+    const suWan = findCharacter(result.state, '苏婉');
+    assert.equal(result.state.characters.user.relations[0].target, suWan.id);
+    assert.equal(result.state.characters.user.relations[0].type, '同门');
     assert.equal(result.state.characters['我'], undefined);
     assert.equal(result.state.characters['你'], undefined);
     assert.equal(result.state.characters['Player'], undefined);
@@ -1111,18 +1172,61 @@ test('主角占位符在注入里显示为「你」', () => {
     assert.match(text, /realm：筑基一层/);
 });
 
-test('set_relation 把称呼记在关系上，不进主角别名', () => {
+test('NPC 关系只保留主角侧，不记称呼', () => {
     const result = run(createEmptyState(), [
         { op: 'set_relation', from: '苏婉', to: 'user', type: '同门', address: '师兄', evidence: 'msg:1', confidence: 0.9 },
     ]);
-    const relation = findCharacter(result.state, '苏婉').relations[0];
-    assert.equal(relation.address, '师兄');
-    assert.equal(relation.target, 'user');
-    assert.equal(relation.targetName, '你');
+    const relation = result.state.characters.user.relations[0];
+    assert.equal(relation.type, '同门');
+    assert.equal(relation.callsPlayer, undefined);
+    assert.equal(relation.address, undefined);
+    assert.equal(relation.target, findCharacter(result.state, '苏婉').id);
+    assert.equal(relation.targetName, '苏婉');
+    assert.equal(findCharacter(result.state, '苏婉').relations.length, 0);
     assert.deepEqual(result.state.characters.user.aliases, []);
 });
 
-test('只改称呼时原地更新关系，不新增版本', () => {
+test('旧数据的 NPC 关系迁移到主角侧，NPC 关系清空', () => {
+    const state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main', access: 'protagonist',
+        state: {}, items: [], skills: [], abilities: [],
+        relations: [{
+            target: 'npc_a', targetName: '苏清雪', type: '暧昧交易', validFrom: '', validTo: null,
+            evidence: 'msg:26', confidence: 0.7, access: 'public',
+        }],
+    };
+    state.characters.npc_a = {
+        id: 'npc_a', name: '苏清雪', tier: 'major', access: 'public',
+        state: {}, items: [], skills: [], abilities: [],
+        relations: [{
+            target: 'user', targetName: '你', type: '道侣', address: '师姐', validFrom: '',
+            validTo: null, evidence: 'msg:74', confidence: 0.8, access: 'public',
+        }],
+    };
+    const normalized = normalizeState(state);
+    const relation = normalized.characters.user.relations[0];
+    assert.equal(relation.type, '道侣');
+    assert.equal(relation.callsPlayer, undefined);
+    assert.equal(relation.address, undefined);
+    assert.equal(normalized.characters.npc_a.relations.length, 0);
+});
+
+test('有主角时 NPC 与 NPC 的关系不建档', () => {
+    const state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main', access: 'protagonist',
+        state: {}, items: [], skills: [], abilities: [], relations: [],
+    };
+    run(state, [
+        { op: 'set_relation', from: '苏婉', to: '王掌柜', type: '同门', evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    assert.equal(state.characters.user.relations.length, 0);
+    assert.equal(state.characters['苏婉'], undefined);
+    assert.equal(state.characters['王掌柜'], undefined);
+});
+
+test('重复写同一关系（含旧 address）不新增版本', () => {
     let state = run(createEmptyState(), [
         { op: 'set_relation', from: '苏婉', to: 'user', type: '同门', address: '师兄', evidence: 'msg:1', confidence: 0.9 },
     ]).state;
@@ -1130,9 +1234,9 @@ test('只改称呼时原地更新关系，不新增版本', () => {
         { op: 'set_relation', from: '苏婉', to: 'user', type: '同门', address: '道友', evidence: 'msg:9', confidence: 0.9 },
     ]).state;
 
-    const relations = findCharacter(state, '苏婉').relations;
+    const relations = state.characters.user.relations;
     assert.equal(relations.length, 1);
-    assert.equal(relations[0].address, '道友');
+    assert.equal(relations[0].address, undefined);
     assert.equal(relations[0].validTo, null);
 });
 
@@ -1147,10 +1251,10 @@ test('态度不再记账，类型不变时原地更新', () => {
     const relations = state.characters.user.relations;
     assert.equal(relations.length, 1);
     assert.equal(relations[0].attitude, undefined);
-    assert.equal(relations[0].address, '师妹');
+    assert.equal(relations[0].address, undefined);
 });
 
-test('关系类型变化才新增版本，称呼不跨类型继承', () => {
+test('关系类型变化才新增版本', () => {
     let state = run(createEmptyState(), [
         { op: 'set_relation', from: 'user', to: '苏婉', type: '同门', address: '师妹', evidence: 'msg:1', confidence: 0.9 },
     ]).state;
@@ -1161,10 +1265,10 @@ test('关系类型变化才新增版本，称呼不跨类型继承', () => {
     assert.equal(relations.length, 2);
     assert.notEqual(relations[0].validTo, null);
     assert.equal(relations[1].type, '仇敌');
-    assert.equal(relations[1].address, '');
+    assert.equal(relations[1].address, undefined);
 });
 
-test('assembleInjection 渲染关系称呼', () => {
+test('assembleInjection 渲染关系类型', () => {
     let state = run(createEmptyState(), [
         { op: 'set_relation', from: 'user', to: '苏婉', type: '同门', address: '师妹', evidence: 'msg:1', confidence: 0.9 },
     ]).state;
@@ -1174,8 +1278,8 @@ test('assembleInjection 渲染关系称呼', () => {
         activeCharacterIds: ['user', '苏婉'],
         protagonistId: 'user',
     });
-    assert.match(text, /苏婉\(同门，称「师妹」\)/);
-    assert.doesNotMatch(text, /态度|亲近/);
+    assert.match(text, /苏婉\(同门\)/);
+    assert.doesNotMatch(text, /态度|亲近|称「/);
 });
 
 test('主角姓名优先用台账，其次 persona，且排在字段第一位', () => {
@@ -1190,7 +1294,7 @@ test('主角姓名优先用台账，其次 persona，且排在字段第一位', 
         protagonistName: '林远',
         fieldLabels,
     });
-    assert.match(withPersona, /【角色·你】主角\n姓名：林远 \| 境界：练气一层/);
+    assert.match(withPersona, /【角色·你】主角级\n姓名：林远 \| 境界：练气一层/);
 
     // 台账里记过姓名时优先用台账，persona 不再覆盖。
     state.characters.user.state.name = { current: '林小远', history: [], access: 'public' };
@@ -1202,6 +1306,29 @@ test('主角姓名优先用台账，其次 persona，且排在字段第一位', 
     });
     assert.match(recorded, /姓名：林小远/);
     assert.doesNotMatch(recorded, /姓名：林远/);
+});
+
+test('姓名默认好友级，persona 名种进台账不覆盖已有姓名', () => {
+    const seeded = createEmptyState();
+    assert.equal(seedProtagonistName(seeded, '林远'), true);
+    assert.equal(seeded.characters.user.state.name.current, '林远');
+    assert.equal(seeded.characters.user.state.name.access, 'friend');
+    assert.equal(seedProtagonistName(seeded, '别人'), false);
+    assert.equal(seeded.characters.user.state.name.current, '林远');
+    assert.equal(seedProtagonistName(seeded, 'User'), false);
+
+    const set = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'name', value: '林远', evidence: 'msg:0', confidence: 1 },
+    ]).state;
+    assert.equal(set.characters.user.state.name.access, 'friend');
+
+    const text = assembleInjection(set, {
+        tokenBudget: 3000,
+        protagonistId: 'user',
+        fieldLabels: getGenrePreset('xianxia').fieldLabels,
+    });
+    assert.match(text, /姓名：林远（知情：你）/);
+    assert.match(text, /姓名：林远 ｜ 朋友级；默认知情=无/);
 });
 
 test('酒馆默认 persona 占位名不会被当成姓名注入', () => {
@@ -1224,6 +1351,50 @@ test('注入头部声明在场不等于知情', () => {
     const text = assembleInjection(state, { protagonistId: 'user' });
     assert.match(text, /在场、看到，不等于知情/);
     assert.match(text, /反复提到某条秘密，也不等于它已经公开/);
+    assert.match(text, /都是默认可知情范围/);
+    assert.match(text, /主角级=只有你知道/);
+});
+
+test('角色块字段顺序与状态栏一致：性别/年龄/外貌在前', () => {
+    const state = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'gender', value: '男', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'family', value: '落魄家族', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'realm', value: '练气初期', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'appearance', value: '魁梧', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'age', value: '二十', evidence: 'msg:0', confidence: 0.9 },
+    ]).state;
+    const preset = getGenrePreset('xianxia');
+    const text = assembleInjection(state, {
+        tokenBudget: 3000,
+        protagonistId: 'user',
+        protagonistName: '林远',
+        fieldLabels: preset.fieldLabels,
+        fieldOrder: preset.fieldOrder,
+    });
+    assert.match(
+        text,
+        /【角色·你】主角级\n姓名：林远 \| 性别：男 \| 年龄：二十 \| 外貌体型：魁梧 \| 境界：练气初期 \| 家族：落魄家族/,
+    );
+});
+
+test('角色块标知情档位，没有状态的路人块不注入', () => {
+    const state = run(createEmptyState(), [
+        {
+            op: 'set_scene',
+            scene: { place: '白玉广场', participants: ['user', '陈立', '月白长裙女修'] },
+            evidence: 'msg:0',
+            confidence: 0.9,
+        },
+        { op: 'set', character: 'user', field: 'realm', value: '练气一层', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set_relation', from: '陈立', to: 'user', type: '测灵执事', address: '陈执事', evidence: 'msg:1', confidence: 0.9 },
+    ]).state;
+    const text = assembleInjection(state, { tokenBudget: 3000, protagonistId: 'user' });
+    assert.match(text, /【角色·你】主角级/);
+    assert.match(text, /陈立\(测灵执事\)/);
+    assert.doesNotMatch(text, /对玩家/);
+    assert.doesNotMatch(text, /【角色·月白长裙女修】/);
+    // 只是不占角色块，在场名单仍然保留。
+    assert.match(text, /在场：你、陈立、月白长裙女修/);
 });
 
 test('suspects 渲染具体怀疑内容', () => {
@@ -1267,9 +1438,9 @@ test('NPC 的秘密字段带知情标记，离场名录不显示', () => {
     assert.doesNotMatch(roster, /家族旧部/);
 });
 
-test('提取提示词要求把称谓写进 address', () => {
+test('提取提示词不再要求记录称呼', () => {
     const { system } = buildExtractionPrompt(createEmptyState(), []);
-    assert.match(system, /address/);
+    assert.doesNotMatch(system, /address|callsPlayer/);
     assert.match(system, /称呼不是名字/);
 });
 
@@ -1593,7 +1764,8 @@ test('注入渲染 NPC 对玩家的称呼', () => {
         activeCharacterIds: ['user', '苏婉'],
         protagonistId: 'user',
     });
-    assert.match(text, /【角色·苏婉】[\s\S]*对玩家：同门，称「师兄」/);
+    assert.match(text, /苏婉\(同门\)/);
+    assert.doesNotMatch(text, /对玩家|称「/);
 });
 
 test('parseExtractionResponse 容忍字符串里的裸换行', () => {
@@ -1616,7 +1788,7 @@ test('重复抽取同一关系不新增版本', () => {
     state = run(state, [
         { op: 'set_relation', from: '阿箬', to: 'user', type: '同门', address: '师叔', evidence: 'msg:9', confidence: 0.9 },
     ]).state;
-    assert.equal(findCharacter(state, '阿箬').relations.length, 1);
+    assert.equal(state.characters.user.relations.length, 1);
 });
 
 test('changedOps 只记录真正变化的关系和档位', () => {
@@ -1633,11 +1805,12 @@ test('changedOps 只记录真正变化的关系和档位', () => {
     assert.equal(repeat.changedOps.length, 0);
 });
 
-test('称呼只收短称呼，台词不写进 address', () => {
+test('旧 address 字段不再写入关系', () => {
     const state = run(createEmptyState(), [
         { op: 'set_relation', from: '苏婉', to: 'user', type: '同门', address: '急什么', evidence: 'msg:1', confidence: 0.9 },
     ]).state;
-    assert.equal(findCharacter(state, '苏婉').relations[0].address, '');
+    assert.equal(state.characters.user.relations[0].callsPlayer, undefined);
+    assert.equal(state.characters.user.relations[0].address, undefined);
 });
 
 test('move_item 移到当前持有者不产生新版本', () => {
@@ -1710,7 +1883,8 @@ test('progress 归一化为 0-100 的整数', () => {
     ]);
     assert.equal(result.state.characters.user.state.progress.current, 100);
 
-    result = run(result.state, [
+    // 负数在新建进度时按 0 处理（已写过进度后不允许倒退，见单调性测试）。
+    result = run(createEmptyState(), [
         { op: 'set', character: 'user', field: 'progress', value: -3, evidence: 'msg:2', confidence: 0.9 },
     ]);
     assert.equal(result.state.characters.user.state.progress.current, 0);
@@ -1735,6 +1909,32 @@ test('progress 只对主角可见，NPC 的进度不注入', () => {
     });
     assert.match(text, /progress：30\/100（只有你知道）/);
     assert.doesNotMatch(text, /progress：60/);
+});
+
+test('境界进度不能倒退，突破同批写 realm 才允许', () => {
+    let result = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'realm', value: '练气初期', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'progress', value: 5, evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    let state = result.state;
+    assert.equal(state.characters.user.state.progress.current, 5);
+
+    result = run(state, [
+        { op: 'set', character: 'user', field: 'progress', value: 2, evidence: 'msg:2', confidence: 0.9 },
+    ]);
+    state = result.state;
+    assert.equal(result.rejected.length, 1);
+    assert.match(result.rejected[0].reason, /境界进度不能从 5 降到 2/);
+    assert.equal(state.characters.user.state.progress.current, 5);
+
+    // 同一批里换了境界（突破/跌境）才允许进度下降或归零。
+    result = run(state, [
+        { op: 'set', character: 'user', field: 'realm', value: '筑基初期', evidence: 'msg:3', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'progress', value: 1, evidence: 'msg:3', confidence: 0.9 },
+    ]);
+    state = result.state;
+    assert.equal(state.characters.user.state.realm.current, '筑基初期');
+    assert.equal(state.characters.user.state.progress.current, 1);
 });
 
 test('progress 非数字被拒绝', () => {
@@ -1886,9 +2086,8 @@ test('对抗：境界只是多了空白，不触发归零', () => {
 
 test('对抗：进度已经是 0 时换境界不再新增历史', () => {
     let state = progressState();
-    state = run(state, [
-        { op: 'set', character: 'user', field: 'progress', value: 0, evidence: 'msg:1', confidence: 0.9 },
-    ]).state;
+    // 进度只增不减；直接把当前值置 0，模拟已归零的状态。
+    state.characters.user.state.progress.current = 0;
     const before = state.characters.user.state.progress.history.length;
     state = run(state, [
         { op: 'set', character: 'user', field: 'realm', value: '筑基初期', evidence: 'msg:2', confidence: 0.9 },
@@ -1974,7 +2173,7 @@ test('公开项定期上调：字段/物品/功法/神通升到朋友级，跳�
     const user = state.characters.user;
     assert.equal(entityAccess(user.state.appearance), 'friend');
     assert.equal(entityAccess(user.state.gender), 'public');
-    assert.equal(entityAccess(user.state.name), 'public');
+    assert.equal(entityAccess(user.state.name), 'friend');
     assert.equal(entityAccess(user.state.progress), 'protagonist');
     assert.equal(entityAccess(user.items.find((item) => item.id === 'i_jade')), 'friend');
     assert.equal(entityAccess(user.items.find((item) => item.id === 'i_gold')), 'friend');
@@ -2119,7 +2318,10 @@ test('稳定 ID：merge_character 迁移数据与引用', () => {
     ]);
     assert.equal(findCharacter(result.state, '月白长裙女修').id, to.id);
     assert.equal(findCharacter(result.state, '苏绾').items.length, 1);
-    assert.equal(findCharacter(result.state, '苏绾').relations.length, 1);
+    // 关系只存在主角→角色这一侧；合并后 target 跟着换成苏绾。
+    assert.equal(findCharacter(result.state, '苏绾').relations.length, 0);
+    assert.equal(result.state.characters.user.relations.length, 1);
+    assert.equal(result.state.characters.user.relations[0].target, to.id);
     assert.ok(findCharacter(result.state, '苏绾').aliases.includes('月白长裙女修'));
     assert.equal(result.state.characters[from.id], undefined);
 });
@@ -2593,13 +2795,45 @@ test('reveal 的 character 写错名字不会新建幽灵角色', () => {
     assert.ok(!Object.values(result.state.characters).some((character) => character.name === '对方'));
 });
 
-test('题材标签覆盖体质、家族、身世与目标', () => {
+test('题材标签覆盖体质、家族与身世，health/objective 已移除', () => {
     const labels = getGenrePreset('xianxia').fieldLabels;
     assert.equal(labels.physique, '体质');
     assert.equal(labels.family, '家族');
     assert.equal(labels.origin, '身世');
-    assert.equal(labels.objective, '目标');
-    assert.equal(getGenrePreset('urban').fieldLabels.objective, '目标');
+    for (const id of ['xianxia', 'urban', 'scifi', 'mystery', 'romance']) {
+        const preset = getGenrePreset(id);
+        assert.equal(preset.fieldLabels.health, undefined);
+        assert.equal(preset.fieldLabels.objective, undefined);
+        assert.ok(!preset.fieldOrder.includes('health'));
+        assert.ok(!preset.fieldOrder.includes('objective'));
+        // 题材提示会进入提取提示，也不能再教模型写这两个字段。
+        assert.ok(!preset.hint.includes('health'));
+        assert.ok(!preset.hint.includes('objective'));
+    }
+});
+
+test('health 与 objective 写入被拒，旧数据加载时清掉', () => {
+    const result = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'health', value: '重伤', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'objective', value: '拜入宗门', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: '伤势', value: '轻伤', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: '目标', value: '复仇', evidence: 'msg:0', confidence: 0.9 },
+    ]);
+    assert.equal(result.rejected.length, 4);
+    const old = createEmptyState();
+    old.characters.user = {
+        id: 'user',
+        name: '你',
+        state: {
+            health: { current: '重伤', history: [] },
+            objective: { current: '拜入宗门', history: [] },
+        },
+    };
+    const state = normalizeState(old);
+    assert.equal(state.characters.user.state.health, undefined);
+    assert.equal(state.characters.user.state.objective, undefined);
+    const text = assembleInjection(state, { tokenBudget: 3000, protagonistId: 'user' });
+    assert.doesNotMatch(text, /伤势|目标/);
 });
 
 test('物品转给公开级角色不会把秘密变成公开', () => {
@@ -2848,6 +3082,114 @@ test('提取提示只让与主角直接对话的角色进关系栏', () => {
     assert.match(system, /旁白一笔带过的路人/);
     assert.match(system, /participants 只写当前与主角直接对话的人/);
     assert.match(system, /set_relation 只写与主角直接对话的人/);
+});
+
+test('功法泛称不建档，残缺类状态不写进 level', () => {
+    const result = run(createEmptyState(), [
+        { op: 'add_skill', character: 'user', skill: { name: '残缺功法', level: '残缺' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { name: '功法残卷' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { name: '引灵锻体', level: '残缺' }, evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    const skills = result.state.characters.user.skills;
+    assert.deepEqual(skills.map((skill) => skill.name), ['引灵锻体']);
+    assert.equal(skills[0].level, '');
+    assert.equal(result.rejected.filter((item) => /泛称不记/.test(item.reason)).length, 2);
+    assert.match(buildExtractionPrompt(createEmptyState(), []).system, /泛称不算名字/);
+});
+
+test('单条锚点：编辑前面的消息不会让后面的记录一起失效', () => {
+    const chatBefore = [
+        { is_user: false, mes: '开场' },
+        { is_user: true, mes: '玩家' },
+        { is_user: false, mes: '入宗' },
+        { is_user: true, mes: '继续' },
+        { is_user: false, mes: '入门' },
+    ];
+    const chatAfter = structuredClone(chatBefore);
+    chatAfter[2].mes = '入宗（改过一句）';
+    const sectRecord = {
+        to: 2,
+        anchor: messageHash(chatBefore[2]),
+        prefixHash: computePrefixHashes(chatBefore)[2],
+        ops: [{ op: 'set', character: 'user', field: 'sect', value: '青云剑宗外门', evidence: 'msg:2', confidence: 0.9 }],
+        scene: {},
+    };
+    const realmRecord = {
+        to: 4,
+        anchor: messageHash(chatBefore[4]),
+        prefixHash: computePrefixHashes(chatBefore)[4],
+        ops: [{ op: 'set', character: 'user', field: 'realm', value: '练气初期', evidence: 'msg:4', confidence: 0.9 }],
+        scene: {},
+    };
+    const history = [sectRecord, realmRecord];
+
+    assert.equal(recordMatchesChat(sectRecord, chatAfter), false);
+    assert.equal(recordMatchesChat(realmRecord, chatAfter), true);
+    const branch = selectHistoryBranch(history, chatAfter);
+    assert.deepEqual(branch.map((record) => record.to), [4]);
+    const restored = replayHistory(branch, 4);
+    assert.equal(restored.characters.user.state.sect, undefined);
+    assert.equal(restored.characters.user.state.realm.current, '练气初期');
+});
+
+test('旧记录能对上时补单条锚点，对不上的不补', () => {
+    const chat = [
+        { is_user: false, mes: '开场' },
+        { is_user: false, mes: '回复' },
+    ];
+    const legacy = { to: 1, prefixHash: computePrefixHashes(chat)[1], ops: [], scene: {} };
+    const stale = { to: 1, prefixHash: 'deadbeef', ops: [], scene: {} };
+    assert.equal(backfillAnchors([legacy, stale], chat), 1);
+    assert.equal(legacy.anchor, messageHash(chat[1]));
+    assert.equal(stale.anchor, undefined);
+});
+
+test('swipe 多版本各留一条记录，按当前正文自动选分支', () => {
+    const oldChat = [
+        { is_user: false, mes: '开场' },
+        { is_user: false, mes: '旧版回复' },
+    ];
+    const newChat = [
+        { is_user: false, mes: '开场' },
+        { is_user: false, mes: '新版回复' },
+    ];
+    const unknownChat = [
+        { is_user: false, mes: '开场' },
+        { is_user: false, mes: '尚未结算的回复' },
+    ];
+    const record0 = {
+        to: 0,
+        prefixHash: computePrefixHashes(oldChat)[0],
+        ops: [{ op: 'set', character: 'user', field: 'gender', value: '男', evidence: 'msg:0', confidence: 0.9 }],
+        scene: { time: '', day: 1, place: '', participants: ['user'] },
+    };
+    const oldRecord = {
+        to: 1,
+        prefixHash: computePrefixHashes(oldChat)[1],
+        ops: [{ op: 'set', character: 'user', field: 'situation', value: '旧版', evidence: 'msg:1', confidence: 0.9 }],
+        scene: { time: '', day: 1, place: '旧地', participants: ['user'] },
+    };
+    const newRecord = {
+        to: 1,
+        prefixHash: computePrefixHashes(newChat)[1],
+        ops: [{ op: 'set', character: 'user', field: 'situation', value: '新版', evidence: 'msg:1', confidence: 0.9 }],
+        scene: { time: '', day: 1, place: '新地', participants: ['user'] },
+    };
+    const history = [record0, oldRecord, newRecord];
+
+    const oldBranch = selectHistoryBranch(history, oldChat);
+    assert.deepEqual(oldBranch.map((record) => record.to), [0, 1]);
+    assert.equal(oldBranch[1], oldRecord);
+    assert.equal(findReplayPoint(history, oldChat).index, 1);
+    assert.equal(replayHistory(oldBranch, 1).characters.user.state.situation.current, '旧版');
+
+    const newBranch = selectHistoryBranch(history, newChat);
+    assert.equal(newBranch[1], newRecord);
+    assert.equal(replayHistory(newBranch, 1).characters.user.state.situation.current, '新版');
+
+    // 还没结算的新 swipe 没有对应记录，回放到上一条。
+    assert.deepEqual(selectHistoryBranch(history, unknownChat).map((record) => record.to), [0]);
+    assert.equal(findReplayPoint(history, unknownChat).index, 0);
 });
 
 test('场景时间统一成日期 + 时辰，旧数据只取时辰', () => {

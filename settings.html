@@ -89,6 +89,12 @@
                 <span class="factledger-muted">≥ 阈值自动应用；0.5 到阈值之间进待复核；低于 0.5 拒绝</span>
             </div>
 
+            <label class="checkbox_label" for="factledger_auto_resettle">
+                <input type="checkbox" id="factledger_auto_resettle" />
+                <span>正文改动后自动重算该条</span>
+            </label>
+            <div class="factledger-hint">编辑或切换 AI 回复后，只重新提取被改的那一条（会多一次模型调用，1.2 秒防抖）。关闭后只在状态栏提示，可在台账日志页手动点「重算这一条」。</div>
+
             <hr>
             <h4>题材与提示</h4>
 
@@ -119,6 +125,21 @@
 
             <hr>
             <h4>注入与隔离</h4>
+
+            <div class="factledger-row">
+                <label for="factledger_inject_position">注入位置</label>
+                <select id="factledger_inject_position" class="text_pole">
+                    <option value="chat">对话历史中（世界书之后）</option>
+                    <option value="prompt">系统提示词（世界书之前）</option>
+                </select>
+            </div>
+
+            <div class="factledger-row">
+                <label for="factledger_inject_depth">注入深度</label>
+                <input type="number" id="factledger_inject_depth" class="text_pole" min="0" step="1" />
+                <span class="factledger-muted">距最新消息的条数，仅在「对话历史中」生效；0 = 紧贴最新消息</span>
+            </div>
+            <div class="factledger-hint">部分模型（Qwen/Queen 等）不接受非首条 system 消息；用「对话历史中」若报错，切回「系统提示词」。</div>
 
             <div class="factledger-row">
                 <label for="factledger_inject_budget">台账注入 token 预算</label>

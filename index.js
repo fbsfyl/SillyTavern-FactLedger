@@ -19,6 +19,7 @@ import {
     findReplayPoint,
     replayHistory,
     ensureCharacterRecord,
+    seedProtagonistName,
     PROTAGONIST_ID,
     PROTAGONIST_ALIASES,
     ACCESS_LEVELS,
@@ -31,6 +32,9 @@ import {
     promotePublicEntries,
     sceneTimeLabel,
     resolveSceneDay,
+    selectHistoryBranch,
+    recordMatchesChat,
+    backfillAnchors,
 } from './lib/ledger.js';
 import { DEFAULT_GENRE, GENRE_PRESETS, getGenrePreset, listGenrePresets } from './lib/genres.js';
 import { classifyExtractionFailure, failureMessage } from './lib/refusal.js';
@@ -40,13 +44,17 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.16.0';
+const VERSION = '0.16.5';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
-// Qwen/Queen chat templates reject a system message that is not the first one,
-// so the ledger is merged into the main system prompt instead of inserted
-// in-chat. Role stays SYSTEM; the depth setting no longer applies.
+// Matches SillyTavern's extension_prompt_types / extension_prompt_roles.
+// IN_PROMPT merges into the main system prompt (before world info and chat).
+// IN_CHAT inserts a message at the given depth in the chat history (after world info).
 const IN_PROMPT = 0;
+const IN_CHAT = 1;
 const ROLE_SYSTEM = 0;
+// Qwen/Queen chat templates reject a system message that is not the first one;
+// switch the position back to IN_PROMPT for those models.
+const INJECT_POSITIONS = new Set(['chat', 'prompt']);
 
 const DEFAULT_SETTINGS = {
     enabled: true,
@@ -64,15 +72,21 @@ const DEFAULT_SETTINGS = {
     confidenceThreshold: 0.7,
     tierVoteThreshold: 2,
     injectBudget: 3000,
+    // chat = 对话历史中（世界书之后）；prompt = 主系统提示词。
+    injectPosition: 'chat',
+    // 距最新消息的条数，0 = 紧贴最新消息；仅 injectPosition 为 chat 时生效。
+    injectDepth: 4,
     knowledgeGate: true,
     leakCheck: true,
     showOthers: true,
     // 每 N 条结算过的消息，把主角仍公开的字段/物品/功法/神通升到朋友级；0 = 关闭。
     publicPromoteInterval: 20,
+    // 正文被改动后，自动重新提取被改的那一条（会多一次模型调用）。
+    autoResettleOnEdit: true,
 };
 
-// 旧版默认题材提示里还有已删除的 technique/location/status 与事件记录；命中这些词就视为旧默认。
-const LEGACY_HINT_MARKERS = ['technique（功法）', 'location（地点）', 'status（状态）', 'knownBy', '事件按「问题'];
+// 旧版默认题材提示里还有已删除的字段与事件记录；命中这些词就视为旧默认。
+const LEGACY_HINT_MARKERS = ['technique（功法）', 'location（地点）', 'status（状态）', 'health（伤势）', 'objective（目标）', '货币：灵石（枚）。', 'knownBy', '事件按「问题'];
 
 const TABS = [
     { id: 'characters', label: '角色' },
@@ -202,6 +216,13 @@ function getSettings() {
     if (!settings.genrePreset || !GENRE_PRESETS[settings.genrePreset]) {
         settings.genrePreset = DEFAULT_GENRE;
     }
+    if (!INJECT_POSITIONS.has(settings.injectPosition)) {
+        settings.injectPosition = DEFAULT_SETTINGS.injectPosition;
+    }
+    const injectDepth = Number(settings.injectDepth);
+    if (!Number.isFinite(injectDepth) || injectDepth < 0) {
+        settings.injectDepth = DEFAULT_SETTINGS.injectDepth;
+    }
     // 旧版默认提示含已删除字段（technique/location/status）或事件记录；命中就换回当前预设。
     if (typeof settings.genreHint !== 'string'
         || LEGACY_HINT_MARKERS.some((marker) => settings.genreHint.includes(marker))) {
@@ -262,7 +283,10 @@ function getState() {
     }
     ctx.chatMetadata[MODULE_NAME] = normalizeState(ctx.chatMetadata[MODULE_NAME]);
     const state = ctx.chatMetadata[MODULE_NAME];
-    if (normalizeStateAliases(state)) {
+    let changed = normalizeStateAliases(state);
+    const personaName = isPlaceholderPersonaName(ctx.name1) ? '' : String(ctx.name1 || '').trim();
+    if (seedProtagonistName(state, personaName)) changed = true;
+    if (changed) {
         saveState();
     }
     return state;
@@ -279,6 +303,12 @@ function setStatus(message) {
     const el = document.getElementById('factledger_status');
     if (el) el.textContent = message;
     log(message);
+}
+
+/** 面板没打开时 setStatus 看不见；手动操作的结果用 toast 兜底。 */
+function toastInfo(message) {
+    const toast = globalThis.toastr || (typeof toastr !== 'undefined' ? toastr : null);
+    toast?.info(message, 'Fact Ledger');
 }
 
 function revealTargetLabel(op, state) {
@@ -361,8 +391,7 @@ function notifyLedgerChanges({ newCharacters, changedOps, pendingOps }, state) {
             const from = characterByRef(state, op.from);
             const to = characterByRef(state, op.to);
             const detail = op.type || '';
-            const address = op.address ? `，称「${op.address}」` : '';
-            relationLines.push(`${from?.name || op.from} → ${to?.name || op.to}：${detail || '关系更新'}${address}`);
+            relationLines.push(`${from?.name || op.from} → ${to?.name || op.to}：${detail || '关系更新'}`);
         } else if (op?.op === 'set_tier') {
             const person = characterByRef(state, op.character || op.characterId);
             if (!person) continue;
@@ -454,6 +483,8 @@ function restoreLedgerFromHistory(reason = '') {
     const ctx = getContext();
     const state = getState();
     const history = Array.isArray(state.meta.history) ? state.meta.history : [];
+    // 能对上的旧记录补单条锚点：以后编辑别的消息只影响被改的那一条。
+    backfillAnchors(history, ctx.chat);
 
     if (!history.length) {
         state.meta.lastProcessedMessage = reanchorWindow(ctx.chat.length, 20);
@@ -474,13 +505,16 @@ function restoreLedgerFromHistory(reason = '') {
         log('ledger restore skipped: no matching prefix', reason);
         return -1;
     }
-    const restored = replayHistory(history, index);
+    // 同一消息序号可能有多条 swipe 记录；只回放与当前正文匹配的那条分支。
+    const branch = selectHistoryBranch(history, ctx.chat);
+    const restored = replayHistory(branch, index);
     const pinnedBefore = String(state.meta.protagonistId || '').trim();
     const pinnedExisted = pinnedBefore !== '' && Boolean(state.characters[pinnedBefore]);
     state.characters = restored.characters;
     dropMissingProtagonist(state, pinnedBefore, pinnedExisted);
     state.scene = restored.scene;
-    state.meta.history = history.filter((record) => Number(record?.to) <= index);
+    // 不裁掉其它 swipe 的记录：切回旧版时还要靠它们回放。
+    state.meta.history = history;
     // 回放会重新分配 npc_xxx，计数器只许往前，不能让后来的角色复用已有 id。
     state.meta.nextCharacterId = Math.max(
         Number(state.meta.nextCharacterId) || 1,
@@ -494,6 +528,294 @@ function restoreLedgerFromHistory(reason = '') {
     saveState();
     log('ledger restored', reason, index);
     return index;
+}
+
+/** 当前正文下，哪些消息序号的记录已经全部对不上（正文被改过）。 */
+function lostHistoryIndices(chat, history) {
+    const hashes = computePrefixHashes(chat);
+    const byIndex = new Map();
+    for (const record of Array.isArray(history) ? history : []) {
+        const to = Number(record?.to);
+        if (!Number.isFinite(to) || to < 0 || to >= chat.length) continue;
+        if (!byIndex.has(to)) byIndex.set(to, []);
+        byIndex.get(to).push(record);
+    }
+    const lost = [];
+    for (const [to, records] of byIndex) {
+        if (!records.some((record) => recordMatchesChat(record, chat, hashes))) lost.push(to);
+    }
+    return lost.sort((a, b) => a - b);
+}
+
+/** 只重算一条 AI 回复：用它前面的台账状态做底，重新提取后替换该轮记录。 */
+async function resettleMessage(index, options = {}) {
+    const auto = Boolean(options.auto);
+    if (settleRunning) {
+        if (!auto) setStatus('结算正在进行中，请稍候。');
+        return null;
+    }
+    const ctx = getContext();
+    const settings = getSettings();
+    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
+    const target = Number(index);
+    if (!settings.enabled) return null;
+    if (!Number.isFinite(target) || target < 0 || target >= chat.length) return null;
+    if (chat[target]?.is_user) {
+        if (!auto) setStatus('只能重算 AI 回复的那一条。');
+        return null;
+    }
+    if (!settings.useCurrentConnection && !getProfileId() && !settings.fallbackProfileId) {
+        if (!auto) setStatus('未选择提取连接配置，请先到设置里选择，或勾选“跟随当前连接”。');
+        return null;
+    }
+
+    const chatId = currentChatId();
+    settleRunning = true;
+    settlePending = true;
+    lockSending();
+    renderStatusBar();
+    setStatus(`正在重算 #${target}…`);
+    const startedAt = Date.now();
+    const extractionMeta = {};
+    try {
+        // 先按当前正文回放一次，确保历史与分支是最新的。
+        restoreLedgerFromHistory('resettle-start');
+        if (chatId !== currentChatId()) return null;
+        const state = getState();
+        const history = state.meta.history || [];
+        const hashes = computePrefixHashes(chat);
+        const branch = selectHistoryBranch(history, chat);
+        const base = replayHistory(branch.filter((record) => Number(record?.to) < target), target - 1);
+        seedProtagonistName(base, ctx.name1);
+        const baseState = {
+            ...base,
+            meta: {
+                ...state.meta,
+                history,
+                nextCharacterId: Math.max(
+                    Number(state.meta.nextCharacterId) || 1,
+                    Number(base.meta?.nextCharacterId) || 1,
+                ),
+            },
+        };
+        // 只把被改的这条当作待提取内容，前面最多 3 条只作上下文。
+        const start = Math.max(0, target - 3);
+        const messages = [];
+        for (let i = start; i <= target; i += 1) {
+            const message = chat[i];
+            const text = String(message?.mes ?? '');
+            if (!text.trim()) continue;
+            messages.push({
+                isUser: Boolean(message.is_user),
+                name: message.name || (message.is_user ? ctx.name1 : ctx.name2),
+                mes: text,
+                index: i,
+            });
+        }
+        const preset = getGenrePreset(settings.genrePreset);
+        const { system, user } = buildExtractionPrompt(baseState, messages, {
+            maxMessages: messages.length,
+            newFrom: target,
+            genreHint: settings.genreHint,
+            skillLabel: preset.skillLabel,
+            abilityLabel: preset.abilityLabel,
+        });
+        const deadline = Date.now() + EXTRACTION_TIMEOUT_MS;
+        let parsed;
+        let lastRaw = '';
+        try {
+            lastRaw = await callExtractionModel(system, user, settings.maxTokens, { deadline, meta: extractionMeta });
+            parsed = parseExtractionResponse(lastRaw);
+        } catch (err) {
+            log('重算提取失败，重试一次', err.message);
+            try {
+                lastRaw = await callExtractionModel(system, user, settings.maxTokens, { deadline, meta: extractionMeta });
+                parsed = parseExtractionResponse(lastRaw);
+            } catch (retryErr) {
+                showExtractionFailure(classifyExtractionFailure(lastRaw, retryErr, extractionMeta));
+                return null;
+            }
+        }
+        if (parsed && !parsed.ops.length && typeof parsed.error === 'string' && parsed.error.trim()) {
+            showExtractionFailure({ kind: 'refusal', detail: parsed.error.trim() });
+            return null;
+        }
+
+        const protagonistAliases = [...PROTAGONIST_ALIASES, ctx.name1].filter(Boolean);
+        const parsedScene = parsed.scene && typeof parsed.scene === 'object' ? parsed.scene : null;
+        const parsedDay = parsedScene ? resolveSceneDay(baseState.scene.day, parsedScene) : null;
+        const workBase = parsedDay === null || parsedDay === baseState.scene.day
+            ? baseState
+            : { ...baseState, scene: { ...baseState.scene, day: parsedDay } };
+        const beforeIds = new Set(Object.keys(baseState.characters || {}));
+        const result = applyOps(workBase, normalizeOpsAliases(parsed.ops), {
+            confidenceThreshold: settings.confidenceThreshold,
+            tierVoteThreshold: settings.tierVoteThreshold,
+            protagonistId: baseState.meta?.protagonistId || settings.protagonistId || PROTAGONIST_ID,
+            reviewThreshold: 0.5,
+            messageCount: chat.length,
+            protagonistAliases,
+            npcFields: [preset.levelField].filter(Boolean),
+        });
+        const nextState = result.state;
+        const normalizeRef = (value) => {
+            const text = String(value ?? '').trim();
+            return text && (text === PROTAGONIST_ID || protagonistAliases.includes(text)) ? PROTAGONIST_ID : value;
+        };
+        if (nextState.characters[PROTAGONIST_ID]) {
+            nextState.meta.protagonistId = PROTAGONIST_ID;
+            nextState.characters[PROTAGONIST_ID].tier = 'main';
+        } else if (typeof parsed.protagonist === 'string' && parsed.protagonist.trim()) {
+            const wanted = normalizeRef(parsed.protagonist.trim());
+            const match = nextState.characters[wanted]
+                || Object.values(nextState.characters).find((character) => character.name === wanted
+                    || (character.aliases || []).includes(wanted));
+            if (match) {
+                nextState.meta.protagonistId = match.id;
+                match.tier = 'main';
+            }
+        }
+        if (parsed.scene && typeof parsed.scene === 'object') {
+            nextState.scene = {
+                time: parsed.scene.time || nextState.scene.time || '',
+                day: parsedDay ?? nextState.scene.day ?? 1,
+                place: parsed.scene.place || nextState.scene.place || '',
+                participants: Array.isArray(parsed.scene.participants)
+                    ? parsed.scene.participants
+                        .map(normalizeRef)
+                        .map((name) => ensureCharacterRecord(nextState, name))
+                        .filter(Boolean)
+                        .map((character) => character.id)
+                    : nextState.scene.participants,
+            };
+            for (const participant of nextState.scene.participants) {
+                const name = String(participant || '').trim();
+                if (!name) continue;
+                const person = ensureCharacterRecord(nextState, name);
+                if (person && nextState.scene.day !== null) person.lastSeenDay = nextState.scene.day;
+            }
+        }
+        if (nextState.scene.day === null) nextState.scene.day = 1;
+
+        const sceneOps = parsed.scene && typeof parsed.scene === 'object'
+            ? [{
+                op: 'set_scene',
+                scene: {
+                    time: nextState.scene.time || '',
+                    day: nextState.scene.day ?? null,
+                    place: nextState.scene.place || '',
+                    participants: (nextState.scene.participants || [])
+                        .map((participant) => nextState.characters?.[participant]?.name || participant),
+                },
+            }]
+            : [];
+        const newCharacters = Object.values(nextState.characters || {})
+            .filter((character) => !beforeIds.has(character.id))
+            .map((character) => ({
+                id: character.id,
+                name: character.name,
+                aliases: character.aliases || [],
+            }));
+        const anchor = messageHash(chat[target]);
+        // 同一条正文的旧记录替换掉；其它 swipe 的记录保留。
+        const mergedHistory = (nextState.meta.history || history).filter((record) => !(
+            Number(record?.to) === target
+            && (record.anchor ? record.anchor === anchor : record.prefixHash === hashes[target])
+        ));
+        mergedHistory.push({
+            to: target,
+            anchor,
+            prefixHash: hashes[target] || '',
+            ops: [...result.applied, ...sceneOps],
+            characters: newCharacters,
+            scene: { ...nextState.scene },
+        });
+
+        // 用新记录重建整条分支；后面仍然对得上的记录继续生效。
+        const nextBranch = selectHistoryBranch(mergedHistory, chat);
+        const newest = nextBranch.length ? Number(nextBranch[nextBranch.length - 1].to) : target;
+        const restored = replayHistory(nextBranch, newest);
+        const pinnedBefore = String(state.meta.protagonistId || '').trim();
+        const pinnedExisted = pinnedBefore !== '' && Boolean(state.characters[pinnedBefore]);
+        state.characters = restored.characters;
+        dropMissingProtagonist(state, pinnedBefore, pinnedExisted);
+        state.scene = restored.scene;
+        state.meta.history = mergedHistory;
+        state.meta.nextCharacterId = Math.max(
+            Number(state.meta.nextCharacterId) || 1,
+            Number(restored.meta?.nextCharacterId) || 1,
+        );
+        state.meta.lastProcessedMessage = newest;
+        state.meta.lastProcessedHash = chat[newest] ? messageHash(chat[newest]) : '';
+        state.meta.lastSettleAt = new Date().toISOString();
+        state.meta.lastError = '';
+        state.meta.review = [
+            ...(state.meta.review || []),
+            ...(result.review || []).map((op) => ({ op, at: new Date().toISOString(), messageIndex: target })),
+        ].slice(-50);
+        if (settings.leakCheck) {
+            const active = (state.scene?.participants || [])
+                .filter((id) => id && id !== (state.meta?.protagonistId || PROTAGONIST_ID));
+            const fresh = detectLeaks(state, collectAssistantText(chat, target, target), active, preset.fieldLabels, {
+                skillLabel: preset.skillLabel,
+                abilityLabel: preset.abilityLabel,
+            });
+            const seen = new Set((state.meta.leaks || []).map((leak) => `${leak.character}|${leak.label}|${leak.quote}`));
+            const added = fresh.filter((leak) => !seen.has(`${leak.character}|${leak.label}|${leak.quote}`));
+            if (added.length) state.meta.leaks = [...(state.meta.leaks || []), ...added];
+        }
+
+        ctx.chatMetadata[MODULE_NAME] = state;
+        saveState();
+        refreshInjection();
+        renderPanel();
+        const count = result.applied.filter((op) => !op?.pendingTier).length;
+        setStatus(`#${target} 重算完成（${((Date.now() - startedAt) / 1000).toFixed(1)} 秒）：应用 ${count} 条，待复核 ${result.review.length} 条，拒绝 ${result.rejected.length} 条。`);
+        notifyReveals((result.changedOps || []).filter((op) => op && op.op === 'reveal'), state);
+        notifyLedgerChanges({
+            newCharacters,
+            changedOps: result.changedOps || [],
+            pendingOps: result.pendingOps || [],
+        }, state);
+        return result;
+    } catch (err) {
+        showExtractionFailure(classifyExtractionFailure('', err, extractionMeta));
+        error('resettle failed', err);
+        return null;
+    } finally {
+        settleRunning = false;
+        settlePending = false;
+        renderStatusBar();
+        unlockSending('resettle-done');
+    }
+}
+
+let resettleTimer = null;
+let resettleIndex = -1;
+let resettleChatId = '';
+
+/** 编辑/切换正文后，若该条记录已失效就安排一次自动重算。 */
+function scheduleResettle(index) {
+    const ctx = getContext();
+    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
+    const target = Number(index);
+    if (!Number.isFinite(target) || target < 0 || target >= chat.length || chat[target]?.is_user) return false;
+    const state = getState();
+    if (!lostHistoryIndices(chat, state.meta.history || []).includes(target)) return false;
+    if (!getSettings().autoResettleOnEdit) return false;
+    resettleIndex = target;
+    resettleChatId = currentChatId();
+    if (resettleTimer) clearTimeout(resettleTimer);
+    setStatus(`第 ${target} 条正文已改，约 1 秒后自动重算…`);
+    resettleTimer = setTimeout(() => {
+        resettleTimer = null;
+        const pending = resettleIndex;
+        const pendingChat = resettleChatId;
+        resettleIndex = -1;
+        if (!pendingChat || pendingChat !== currentChatId()) return;
+        resettleMessage(pending, { auto: true });
+    }, 1200);
+    return true;
 }
 
 function narrativeRulesText() {
@@ -525,23 +847,33 @@ function buildInjectionText() {
     return ledger ? `${rules}\n\n${ledger}` : rules;
 }
 
+/** 设置里的注入位置转成 SillyTavern 的 position/depth。 */
+function injectionTarget(settings) {
+    if (settings.injectPosition === 'prompt') {
+        return { position: IN_PROMPT, depth: 0 };
+    }
+    const depth = Math.max(0, Math.round(Number(settings.injectDepth) || 0));
+    return { position: IN_CHAT, depth };
+}
+
 function refreshInjection() {
     const ctx = getContext();
     const settings = getSettings();
     if (typeof ctx.setExtensionPrompt !== 'function') {
         return '';
     }
+    const { position, depth } = injectionTarget(settings);
     if (!settings.enabled || !ctx.chatMetadata) {
         const rules = narrativeRulesText();
         if (!rules) {
             ctx.setExtensionPrompt(INJECTION_KEY, '', -1, 0, false, ROLE_SYSTEM);
             return '';
         }
-        ctx.setExtensionPrompt(INJECTION_KEY, rules, IN_PROMPT, 0, false, ROLE_SYSTEM);
+        ctx.setExtensionPrompt(INJECTION_KEY, rules, position, depth, false, ROLE_SYSTEM);
         return rules;
     }
     const text = buildInjectionText();
-    ctx.setExtensionPrompt(INJECTION_KEY, text, IN_PROMPT, 0, false, ROLE_SYSTEM);
+    ctx.setExtensionPrompt(INJECTION_KEY, text, position, depth, false, ROLE_SYSTEM);
     return text;
 }
 
@@ -757,7 +1089,9 @@ async function settleLedger(options = {}) {
             aiName: ctx.name2,
         });
         if (!messages.length) {
-            setStatus('没有新的消息需要结算。');
+            const message = '没有新的消息需要结算。';
+            setStatus(message);
+            if (manual) toastInfo(message);
             return null;
         }
         const { system, user } = buildExtractionPrompt(state, messages, {
@@ -863,7 +1197,11 @@ async function settleLedger(options = {}) {
         if (nextState.scene.day === null) nextState.scene.day = 1;
         const lastIndex = Number.isFinite(to) ? to : ctx.chat.length - 1;
         const prefixHashes = computePrefixHashes(ctx.chat);
-        const history = (nextState.meta.history || []).filter((record) => Number(record?.to) !== lastIndex);
+        // 同一序号的不同 swipe 各留一条记录；只有正文完全相同的重复结算才替换。
+        const currentHash = prefixHashes[lastIndex] || '';
+        const history = (nextState.meta.history || []).filter((record) => (
+            Number(record?.to) !== lastIndex || record.prefixHash !== currentHash
+        ));
         // 场景来自 parsed.scene，不在 ops 里；不补成 op 的话，回放时这些只有名字的角色
         // 档案就会丢掉，关系栏只剩 npc_001｜未知｜未知。存显示名而不是 id，回放才认得出来。
         const sceneOps = parsed.scene && typeof parsed.scene === 'object'
@@ -900,14 +1238,31 @@ async function settleLedger(options = {}) {
             }));
         history.push({
             to: lastIndex,
+            anchor: messageHash(ctx.chat[lastIndex]),
             prefixHash: prefixHashes[lastIndex] || '',
             ops: [...result.applied, ...sceneOps, ...(promotionOp ? [promotionOp] : [])],
             characters: newCharacters,
             scene: { ...nextState.scene },
         });
         nextState.meta.history = history;
-        nextState.meta.lastProcessedMessage = lastIndex;
-        nextState.meta.lastProcessedHash = messageHash(ctx.chat[lastIndex]);
+        // 以版本日志为准重建一次：上次结算留下的状态漂移（例如旧记录里的境界被
+        // 这次批量提取漏掉）会在这里纠正，避免状态栏和日志各说各的。
+        const settledBranch = selectHistoryBranch(history, ctx.chat);
+        const settledNewest = settledBranch.length
+            ? Number(settledBranch[settledBranch.length - 1].to)
+            : lastIndex;
+        const settledState = replayHistory(settledBranch, settledNewest);
+        nextState.characters = settledState.characters;
+        nextState.scene = settledState.scene;
+        seedProtagonistName(nextState, ctx.name1);
+        nextState.meta.nextCharacterId = Math.max(
+            Number(nextState.meta.nextCharacterId) || 1,
+            Number(settledState.meta?.nextCharacterId) || 1,
+        );
+        nextState.meta.lastProcessedMessage = settledNewest;
+        nextState.meta.lastProcessedHash = ctx.chat[settledNewest]
+            ? messageHash(ctx.chat[settledNewest])
+            : '';
         nextState.meta.messagesSinceSettle = 0;
         nextState.meta.lastSettleAt = new Date().toISOString();
         nextState.meta.lastError = '';
@@ -1099,6 +1454,7 @@ function bindSettings() {
     bindCheckbox('factledger_leak_check', 'leakCheck');
     bindCheckbox('factledger_show_others', 'showOthers');
     bindCheckbox('factledger_narrative_rules_toggle', 'injectNarrativeRules');
+    bindCheckbox('factledger_auto_resettle', 'autoResettleOnEdit');
 
     bindNumber('factledger_auto_interval', 'autoInterval');
     bindNumber('factledger_public_promote_interval', 'publicPromoteInterval');
@@ -1106,6 +1462,17 @@ function bindSettings() {
     bindNumber('factledger_max_tokens', 'maxTokens');
     bindNumber('factledger_confidence', 'confidenceThreshold');
     bindNumber('factledger_inject_budget', 'injectBudget');
+    bindNumber('factledger_inject_depth', 'injectDepth');
+
+    const positionEl = document.getElementById('factledger_inject_position');
+    if (positionEl) {
+        positionEl.value = settings.injectPosition;
+        positionEl.addEventListener('change', () => {
+            settings.injectPosition = positionEl.value;
+            saveSettings();
+            refreshInjection();
+        });
+    }
 
     const rulesEl = document.getElementById('factledger_narrative_rules');
     if (rulesEl) {
@@ -1371,8 +1738,7 @@ function describeLedgerOp(op, state, preset) {
         }
         case 'set_relation': {
             const detail = op.type || '';
-            const address = op.address ? `，称「${op.address}」` : '';
-            return `${name(op.from)} → ${name(op.to)}：${detail || '关系更新'}${address}`;
+            return `${name(op.from)} → ${name(op.to)}：${detail || '关系更新'}`;
         }
         case 'add_item':
             return `${name(op.character)} 获得 ${itemLabel(op.item)}`;
@@ -1432,8 +1798,23 @@ function renderHistory(body) {
         return;
     }
     const shown = history.slice(-20).reverse();
+    const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+    // 正文改过、当前分支里已经没有对应记录的序号；这些轮次可以单独重算。
+    const lost = lostHistoryIndices(chat, history).filter((index) => chat[index] && !chat[index].is_user);
     body.innerHTML = `
         <div class="factledger-muted">共 ${history.length} 条结算记录，显示最近 ${shown.length} 条。</div>
+        ${lost.length ? `
+            <div class="factledger-card">
+                <div class="factledger-card-head">
+                    <strong>正文已改</strong>
+                    <span class="factledger-badge err">${lost.length} 条失效</span>
+                </div>
+                <div class="factledger-muted">这些消息改过之后，原来的提取记录不再生效；重算只会替换这一轮。</div>
+                <div class="factledger-actions">
+                    ${lost.map((index) => `<button class="menu_button" data-resettle="${index}">重算 #${index}</button>`).join('')}
+                </div>
+            </div>
+        ` : ''}
         ${shown.map((record) => {
             const scene = record.scene || {};
             const ops = (Array.isArray(record.ops) ? record.ops : []).filter((op) => op?.op !== 'set_scene');
@@ -1463,6 +1844,9 @@ function renderHistory(body) {
             `;
         }).join('')}
     `;
+    body.querySelectorAll('[data-resettle]').forEach((button) => {
+        button.addEventListener('click', () => resettleMessage(Number(button.dataset.resettle)));
+    });
 }
 
 function isGated(entity) {
@@ -1854,10 +2238,10 @@ function renderStatusBar() {
         const levelEntry = preset.levelField ? npc.state?.[preset.levelField] : null;
         const level = stateValue(levelEntry);
         const tierText = ACCESS_LABELS[characterAccess(npc)] || characterAccess(npc);
+        // 关系只存在主角一侧；NPC 自己的关系列表不再使用。
         const ownRelation = (protagonist.relations || []).find((item) => item.validTo == null && item.target === pid);
-        const npcRelation = (npc.relations || []).find((item) => item.validTo == null && protagonist.id && item.target === protagonist.id);
-        const rawType = String((ownRelation || npcRelation)?.type || '').trim();
-        // 只显示短称谓；态度、称呼等长文本仍留在台账和注入里，避免撑开状态栏。
+        const rawType = String(ownRelation?.type || '').trim();
+        // 只显示短称谓；过长的关系类型用「—」代替，避免撑开状态栏。
         const relationType = rawType && rawType.length <= 8 && !/[，,。；;：:！!？?…]/.test(rawType)
             ? rawType
             : '—';
@@ -2118,14 +2502,17 @@ function recordManualOps(state, ops, ctx) {
         ? settled
         : Math.max(0, ctx.chat.length - 1);
     const history = state.meta.history || [];
-    const existing = history.find((record) => Number(record?.to) === lastIndex);
+    const hashes = computePrefixHashes(ctx.chat);
+    const existing = history.find((record) => (
+        Number(record?.to) === lastIndex && recordMatchesChat(record, ctx.chat, hashes)
+    ));
     if (existing) {
         existing.ops = [...(existing.ops || []), ...ops];
     } else {
-        const prefixHashes = computePrefixHashes(ctx.chat);
         history.push({
             to: lastIndex,
-            prefixHash: prefixHashes[lastIndex] || '',
+            anchor: messageHash(ctx.chat[lastIndex]),
+            prefixHash: hashes[lastIndex] || '',
             ops: [...ops],
             characters: [],
             scene: { ...state.scene },
@@ -2324,20 +2711,22 @@ function registerSlashCommands() {
             }
             const state = getState();
             const history = Array.isArray(state.meta?.history) ? state.meta.history : [];
-            const target = [...history]
+            const branch = selectHistoryBranch(history, ctx.chat);
+            const target = [...branch]
                 .reverse()
                 .find((record) => Number(record.to) <= index && Number(record.to) < ctx.chat.length);
             if (!target) {
                 setStatus(`没有 <= #${index} 的版本记录。`);
                 return '';
             }
-            const restored = replayHistory(history, target.to);
+            const restored = replayHistory(branch, target.to);
             const pinnedBefore = String(state.meta.protagonistId || '').trim();
             const pinnedExisted = pinnedBefore !== '' && Boolean(state.characters[pinnedBefore]);
             state.characters = restored.characters;
             dropMissingProtagonist(state, pinnedBefore, pinnedExisted);
             state.scene = restored.scene;
-            state.meta.history = history.filter((record) => Number(record.to) <= target.to);
+            // 保留其它 swipe 的记录，切回旧版时还要用。
+            state.meta.history = history;
             state.meta.lastProcessedMessage = target.to;
             state.meta.lastProcessedHash = messageHash(ctx.chat[target.to]);
             clearTransientMeta(state);
@@ -2410,7 +2799,7 @@ function openJsonEditor() {
                     <ul>
                         <li>改谁知道：把该条目的 <code>"access"</code> 改成 <code>"friend"</code> / <code>"intimate"</code> / <code>"protagonist"</code>。</li>
                         <li>改字段值：<code>characters.user.state.realm.current</code>。</li>
-                        <li>改称呼：<code>characters.user.relations[0].address</code>。</li>
+                        <li>改关系类型：<code>characters.user.relations[0].type</code>。</li>
                         <li>加物品：复制 <code>characters.user.items</code> 里的一条，改 <code>id</code> / <code>name</code> / <code>quantity</code>。</li>
                     </ul>
                     <p><b>注意：</b>不要删掉 <code>characters</code>；改坏时先「取消」，再点「导出」备份。</p>
@@ -2470,7 +2859,11 @@ function openJsonEditor() {
 
 function renderPanel() {
     const body = document.getElementById('factledger_body');
-    if (!body) return;
+    // 面板没打开时也要刷新状态栏：swipe/编辑/删除后的回放结果不能等到下次打开面板才显示。
+    if (!body) {
+        renderStatusBar();
+        return;
+    }
 
     populateProtagonistSelect();
     renderStatusBar();
@@ -2581,15 +2974,25 @@ function registerEvents() {
         refreshInjection();
     });
 
-    const invalidateFrom = (index) => {
-        if (!Number.isFinite(Number(index))) return;
-        restoreLedgerFromHistory('message-edited');
+    const invalidateFrom = (index, reason) => {
+        const target = Number(index);
+        if (!Number.isFinite(target)) return;
+        restoreLedgerFromHistory(reason);
         refreshInjection();
         renderPanel();
+        // 回放后再判断：这一条的记录是不是因为正文改动而失效了。
+        const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+        if (!chat[target] || chat[target].is_user) return;
+        if (!lostHistoryIndices(chat, getState().meta.history || []).includes(target)) return;
+        if (getSettings().autoResettleOnEdit) {
+            scheduleResettle(target);
+        } else {
+            setStatus(`第 ${target} 条正文已改，该轮台账已失效；可在台账日志页点「重算这一条」。`);
+        }
     };
 
-    eventSource.on(eventTypes.MESSAGE_EDITED, (index) => invalidateFrom(index));
-    eventSource.on(eventTypes.MESSAGE_SWIPED, (index) => invalidateFrom(index));
+    eventSource.on(eventTypes.MESSAGE_EDITED, (index) => invalidateFrom(index, 'message-edited'));
+    eventSource.on(eventTypes.MESSAGE_SWIPED, (index) => invalidateFrom(index, 'message-swiped'));
     eventSource.on(eventTypes.MESSAGE_DELETED, () => {
         restoreLedgerFromHistory('message-deleted');
         refreshInjection();
