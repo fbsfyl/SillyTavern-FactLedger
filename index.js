@@ -6,6 +6,9 @@ import {
     applyOps,
     assembleInjection,
     healthCheck,
+    missingGenderCharacters,
+    appendManualField,
+    appendManualOp,
     estimateTokens,
     buildExtractionPrompt,
     parseExtractionResponse,
@@ -44,7 +47,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.16.5';
+const VERSION = '0.16.8';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Matches SillyTavern's extension_prompt_types / extension_prompt_roles.
 // IN_PROMPT merges into the main system prompt (before world info and chat).
@@ -79,14 +82,11 @@ const DEFAULT_SETTINGS = {
     knowledgeGate: true,
     leakCheck: true,
     showOthers: true,
-    // 每 N 条结算过的消息，把主角仍公开的字段/物品/功法/神通升到朋友级；0 = 关闭。
+    // 每 N 条结算过的消息，把主角仍公开的字段/物品/功法升到朋友级；0 = 关闭。
     publicPromoteInterval: 20,
     // 正文被改动后，自动重新提取被改的那一条（会多一次模型调用）。
     autoResettleOnEdit: true,
 };
-
-// 旧版默认题材提示里还有已删除的字段与事件记录；命中这些词就视为旧默认。
-const LEGACY_HINT_MARKERS = ['technique（功法）', 'location（地点）', 'status（状态）', 'health（伤势）', 'objective（目标）', '货币：灵石（枚）。', 'knownBy', '事件按「问题'];
 
 const TABS = [
     { id: 'characters', label: '角色' },
@@ -223,20 +223,16 @@ function getSettings() {
     if (!Number.isFinite(injectDepth) || injectDepth < 0) {
         settings.injectDepth = DEFAULT_SETTINGS.injectDepth;
     }
-    // 旧版默认提示含已删除字段（technique/location/status）或事件记录；命中就换回当前预设。
-    if (typeof settings.genreHint !== 'string'
-        || LEGACY_HINT_MARKERS.some((marker) => settings.genreHint.includes(marker))) {
-        settings.genreHint = getGenrePreset(settings.genrePreset).hint;
-    }
-    // 旧版默认规则里还有已删除的【未了结】；只在仍是旧默认时替换，用户改过的不动。
-    if (typeof settings.narrativeRules !== 'string' || settings.narrativeRules.includes('【未了结】')) {
-        settings.narrativeRules = getGenrePreset(settings.genrePreset).narrativeRules || '';
-    }
     return settings;
 }
 
 function saveSettings() {
     saveSettingsDebounced();
+}
+
+/** NPC 可写入的字段：题材的等级字段，以及题材定义了标签的宗门。 */
+function npcFieldsOf(preset) {
+    return [preset?.levelField, preset?.fieldLabels?.sect ? 'sect' : ''].filter(Boolean);
 }
 
 function normalizeStateAliases(state) {
@@ -321,11 +317,10 @@ function revealTargetLabel(op, state) {
         return String(op.item);
     }
     if (op.relation) return `与 ${nameOf(op.relation)} 的关系`;
-    if (op.skill || op.ability) {
-        const key = op.ability ? 'abilities' : 'skills';
-        const wanted = op.ability || op.skill;
+    if (op.skill) {
+        const wanted = op.skill;
         for (const character of Object.values(state.characters || {})) {
-            const trait = (character[key] || []).find((entry) => entry.id === wanted && entry.validTo == null);
+            const trait = (character.skills || []).find((entry) => entry.id === wanted && entry.validTo == null);
             if (trait) return trait.name;
         }
         return String(wanted);
@@ -618,7 +613,7 @@ async function resettleMessage(index, options = {}) {
             newFrom: target,
             genreHint: settings.genreHint,
             skillLabel: preset.skillLabel,
-            abilityLabel: preset.abilityLabel,
+            npcExtraFieldLabels: [preset.fieldLabels?.sect].filter(Boolean),
         });
         const deadline = Date.now() + EXTRACTION_TIMEOUT_MS;
         let parsed;
@@ -648,6 +643,8 @@ async function resettleMessage(index, options = {}) {
             ? baseState
             : { ...baseState, scene: { ...baseState.scene, day: parsedDay } };
         const beforeIds = new Set(Object.keys(baseState.characters || {}));
+        // applyOps 会原地改动状态，进度快照必须在应用之前取。
+        const progressBefore = progressOf(workBase);
         const result = applyOps(workBase, normalizeOpsAliases(parsed.ops), {
             confidenceThreshold: settings.confidenceThreshold,
             tierVoteThreshold: settings.tierVoteThreshold,
@@ -655,7 +652,7 @@ async function resettleMessage(index, options = {}) {
             reviewThreshold: 0.5,
             messageCount: chat.length,
             protagonistAliases,
-            npcFields: [preset.levelField].filter(Boolean),
+            npcFields: npcFieldsOf(preset),
         });
         const nextState = result.state;
         const normalizeRef = (value) => {
@@ -729,6 +726,7 @@ async function resettleMessage(index, options = {}) {
             ops: [...result.applied, ...sceneOps],
             characters: newCharacters,
             scene: { ...nextState.scene },
+            progress: { before: progressBefore, after: progressOf(nextState) },
         });
 
         // 用新记录重建整条分支；后面仍然对得上的记录继续生效。
@@ -758,7 +756,6 @@ async function resettleMessage(index, options = {}) {
                 .filter((id) => id && id !== (state.meta?.protagonistId || PROTAGONIST_ID));
             const fresh = detectLeaks(state, collectAssistantText(chat, target, target), active, preset.fieldLabels, {
                 skillLabel: preset.skillLabel,
-                abilityLabel: preset.abilityLabel,
             });
             const seen = new Set((state.meta.leaks || []).map((leak) => `${leak.character}|${leak.label}|${leak.quote}`));
             const added = fresh.filter((leak) => !seen.has(`${leak.character}|${leak.label}|${leak.quote}`));
@@ -836,7 +833,6 @@ function buildInjectionText() {
         knowledgeGate: settings.knowledgeGate,
         showOthers: settings.showOthers,
         skillLabel: preset.skillLabel,
-        abilityLabel: preset.abilityLabel,
         fieldLabels: preset.fieldLabels,
         recentText,
         fieldOrder: preset.fieldOrder,
@@ -892,7 +888,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // A provider that never answers would leave settleRunning stuck forever,
 // silently disabling every later auto settle. Always give up eventually.
-const EXTRACTION_TIMEOUT_MS = 20000;
+// 提取要读台账 + 20 条消息再输出 JSON；思考型模型还要先推理，20 秒不够。
+const EXTRACTION_TIMEOUT_MS = 60000;
+// 思考 token 和 JSON 正文共用 max_tokens；低于这个值容易只剩思考、正文为空。
+const THINKING_MIN_TOKENS = 8192;
 
 function withTimeout(promise, ms, label) {
     let timer;
@@ -906,7 +905,7 @@ async function callExtractionModel(system, user, maxTokens, options = {}) {
     const ctx = getContext();
     const settings = getSettings();
     const meta = options.meta || null;
-    // 一次结算共用同一个截止时间：重试、换备选连接、解析失败重试都算在这 20 秒里。
+    // 一次结算共用同一个截止时间：重试、换备选连接、解析失败重试都算在这 60 秒里。
     const deadline = Number(options.deadline) || (Date.now() + EXTRACTION_TIMEOUT_MS);
     const remaining = () => Math.max(0, deadline - Date.now());
     const timeoutFor = (label) => {
@@ -971,10 +970,13 @@ function profileModelName(profileId) {
     return String(profiles.find((profile) => profile.id === profileId)?.model || '');
 }
 
-// DeepSeek Flash thinks by default and spends the whole response budget on
-// reasoning, leaving an empty content field. reasoning_effort:none disables it.
-function thinkingOffPayload(profileId) {
-    return /deepseek/i.test(profileModelName(profileId)) ? { reasoning_effort: 'none' } : {};
+// SillyTavern 的 DeepSeek 适配器用 include_reasoning 决定请求里的
+// thinking.type，reasoning_effort 单独写不会打开或关闭思考。
+// 开思考时要同时给 include_reasoning 和 effort，并用够大的 max_tokens。
+function thinkingPayload(profileId) {
+    return /deepseek/i.test(profileModelName(profileId))
+        ? { include_reasoning: true, reasoning_effort: 'high' }
+        : {};
 }
 
 async function requestExtraction(service, profileId, messages, maxTokens, retries, delayMs, deadline = Date.now() + EXTRACTION_TIMEOUT_MS, meta = null) {
@@ -983,7 +985,10 @@ async function requestExtraction(service, profileId, messages, maxTokens, retrie
         includePreset: getSettings().extractionIncludePreset === true,
         stream: false,
     };
-    const noThinking = thinkingOffPayload(profileId);
+    const thinking = thinkingPayload(profileId);
+    const thinkingOn = thinking.include_reasoning === true;
+    // 思考型模型至少给到 8192，避免推理占满预算后正文为空。
+    const effectiveMaxTokens = thinkingOn ? Math.max(Number(maxTokens) || 0, THINKING_MIN_TOKENS) : maxTokens;
     const remaining = () => Math.max(0, deadline - Date.now());
     let lastDetail = '';
 
@@ -996,8 +1001,8 @@ async function requestExtraction(service, profileId, messages, maxTokens, retrie
             let response;
             try {
                 response = await withTimeout(
-                    service.sendRequest(profileId, messages, maxTokens, requestOptions, {
-                        ...noThinking,
+                    service.sendRequest(profileId, messages, effectiveMaxTokens, requestOptions, {
+                        ...thinking,
                         response_format: { type: 'json_object' },
                     }),
                     left,
@@ -1008,7 +1013,7 @@ async function requestExtraction(service, profileId, messages, maxTokens, retrie
                 // Some providers reject response_format; retry once without it.
                 if (/response_format|json_object|bad request|400/i.test(detail)) {
                     response = await withTimeout(
-                        service.sendRequest(profileId, messages, maxTokens, requestOptions, noThinking),
+                        service.sendRequest(profileId, messages, effectiveMaxTokens, requestOptions, thinking),
                         Math.max(1, remaining()),
                         '提取请求',
                     );
@@ -1099,9 +1104,9 @@ async function settleLedger(options = {}) {
             newFrom,
             genreHint: settings.genreHint,
             skillLabel: getGenrePreset(settings.genrePreset).skillLabel,
-            abilityLabel: getGenrePreset(settings.genrePreset).abilityLabel,
+            npcExtraFieldLabels: [getGenrePreset(settings.genrePreset).fieldLabels?.sect].filter(Boolean),
         });
-        // 本轮结算最多 20 秒：首次请求、重试和解析失败重试共用这个截止时间。
+        // 本轮结算最多 60 秒：首次请求、重试和解析失败重试共用这个截止时间。
         const extractionDeadline = Date.now() + EXTRACTION_TIMEOUT_MS;
         const raw = await callExtractionModel(system, user, settings.maxTokens, {
             deadline: extractionDeadline,
@@ -1142,6 +1147,8 @@ async function settleLedger(options = {}) {
         // 记录本次新建的角色，回放时按原始 id 重建，避免按名字重新分配 id 造成串档。
         const beforeIds = new Set(Object.keys(state.characters || {}));
         const requestedOps = normalizeOpsAliases(parsed.ops);
+        // applyOps 会原地改动状态，进度快照必须在应用之前取。
+        const progressBefore = progressOf(baseState);
         const result = applyOps(baseState, requestedOps, {
             confidenceThreshold: settings.confidenceThreshold,
             tierVoteThreshold: settings.tierVoteThreshold,
@@ -1149,7 +1156,7 @@ async function settleLedger(options = {}) {
             reviewThreshold: 0.5,
             messageCount: ctx.chat.length,
             protagonistAliases,
-            npcFields: [getGenrePreset(settings.genrePreset).levelField].filter(Boolean),
+            npcFields: npcFieldsOf(getGenrePreset(settings.genrePreset)),
         });
 
         const nextState = result.state;
@@ -1216,7 +1223,7 @@ async function settleLedger(options = {}) {
                 },
             }]
             : [];
-        // 公开项定期上调：按结算过的消息数计，把主角仍公开的字段/物品/功法/神通升到朋友级。
+        // 公开项定期上调：按结算过的消息数计，把主角仍公开的字段/物品/功法升到朋友级。
         // 结果作为一条 promote_public 写进版本日志，回放时按同一条 op 复原。
         const promoteInterval = Math.max(0, Math.round(Number(settings.publicPromoteInterval) || 0));
         let promotionOp = null;
@@ -1243,6 +1250,7 @@ async function settleLedger(options = {}) {
             ops: [...result.applied, ...sceneOps, ...(promotionOp ? [promotionOp] : [])],
             characters: newCharacters,
             scene: { ...nextState.scene },
+            progress: { before: progressBefore, after: progressOf(nextState) },
         });
         nextState.meta.history = history;
         // 以版本日志为准重建一次：上次结算留下的状态漂移（例如旧记录里的境界被
@@ -1276,7 +1284,7 @@ async function settleLedger(options = {}) {
                 collectAssistantText(ctx.chat, newFrom, lastIndex),
                 leakActive,
                 leakPreset.fieldLabels,
-                { skillLabel: leakPreset.skillLabel, abilityLabel: leakPreset.abilityLabel },
+                { skillLabel: leakPreset.skillLabel },
             )
             : [];
         // 低置信 op 不落账，但要留一个入口：面板可以补采纳，否则等于静默丢弃。
@@ -1677,9 +1685,6 @@ function renderCharacters(body) {
             const skills = currentSkills(character)
                 .map((skill) => `${skill.name}${skill.level ? `(${skill.level})` : ''}`)
                 .join('、');
-            const abilities = currentAbilities(character)
-                .map((ability) => `${ability.name}${ability.level ? `(${ability.level})` : ''}`)
-                .join('、');
             return `
                 <div class="factledger-card">
                     <div class="factledger-card-head">
@@ -1689,7 +1694,6 @@ function renderCharacters(body) {
                     <div class="factledger-muted">${escapeHtml(stateEntries || '无状态字段')}</div>
                     <div class="factledger-muted">物品：${escapeHtml(items || '无')}</div>
                     <div class="factledger-muted">${escapeHtml(preset.skillLabel || '技能')}：${escapeHtml(skills || '无')}</div>
-                    <div class="factledger-muted">${escapeHtml(preset.abilityLabel || '能力')}：${escapeHtml(abilities || '无')}</div>
                 </div>
             `;
         })
@@ -1719,7 +1723,7 @@ function describeLedgerOp(op, state, preset) {
         const key = refText(raw);
         if (!key) return '';
         for (const character of Object.values(state.characters || {})) {
-            for (const trait of [...(character.skills || []), ...(character.abilities || [])]) {
+            for (const trait of character.skills || []) {
                 if (trait.id === key || trait.name === key) return trait.name;
             }
         }
@@ -1764,12 +1768,6 @@ function describeLedgerOp(op, state, preset) {
             return `${preset.skillLabel || '技能'} ${traitLabel(op.skill)}${op.level ? ` → ${op.level}` : ' 更新'}`;
         case 'remove_skill':
             return `${name(op.character)} 失去${preset.skillLabel || '技能'} ${traitLabel(op.skill)}`;
-        case 'add_ability':
-            return `${name(op.character)} 修得${preset.abilityLabel || '能力'} ${traitLabel(op.ability)}`;
-        case 'set_ability':
-            return `${preset.abilityLabel || '能力'} ${traitLabel(op.ability)}${op.level ? ` → ${op.level}` : ' 更新'}`;
-        case 'remove_ability':
-            return `${name(op.character)} 失去${preset.abilityLabel || '能力'} ${traitLabel(op.ability)}`;
         case 'reveal': {
             if (op.belief) return `${name(op.to)} 误以为「${op.belief}」`;
             if (op.suspicion) return `${name(op.to)} 起疑「${op.suspicion}」`;
@@ -1886,7 +1884,10 @@ function renderKnowledge(body) {
                 ref: { kind: 'field', charId: character.id, field },
             });
         }
-        for (const item of (character.items || []).filter((item) => item.validTo == null && isGated(item))) {
+        // 数量归零的条目（用光的丹药、花完的货币）等同于失去，不再留在认知页。
+        for (const item of (character.items || []).filter((item) => (
+            item.validTo == null && Number(item.quantity ?? 1) > 0 && isGated(item)
+        ))) {
             const quantity = Number(item.quantity ?? 1);
             const unit = item.unit || '';
             const quantityText = item.kind === 'currency' || quantity !== 1 ? `×${quantity}${unit}` : '';
@@ -1919,16 +1920,6 @@ function renderKnowledge(body) {
                 ref: { kind: 'skill', charId: character.id, traitId: skill.id },
             });
         }
-        for (const ability of (character.abilities || []).filter((ability) => ability.validTo == null && isGated(ability))) {
-            cards.push({
-                type: preset.abilityLabel || '能力',
-                subject: `${name} · ${preset.abilityLabel || '能力'}`,
-                text: `${ability.name}${ability.level ? `（${ability.level}）` : ''}`,
-                access: entityAccess(ability, 'public'),
-                known: knowledgeSummary(ability, state),
-                ref: { kind: 'ability', charId: character.id, traitId: ability.id },
-            });
-        }
     }
 
     knowledgeEntries = cards;
@@ -1939,7 +1930,9 @@ function renderKnowledge(body) {
     }
 
     body.innerHTML = cards
-        .map((card, index) => `
+        .map((card, index) => {
+            const deletable = card.ref.kind === 'item' || card.ref.kind === 'skill';
+            return `
             <div class="factledger-card">
                 <div class="factledger-card-head">
                     <strong class="factledger-card-subject">${escapeHtml(card.subject || '')}</strong>
@@ -1949,15 +1942,23 @@ function renderKnowledge(body) {
                 <div class="factledger-card-foot">
                     <span class="factledger-muted">${escapeHtml(card.known)}</span>
                     <button class="menu_button factledger-edit-known" data-index="${index}">编辑档位</button>
+                    ${deletable ? `<button class="menu_button factledger-delete-known" data-index="${index}">删除</button>` : ''}
                 </div>
             </div>
-        `)
+        `;
+        })
         .join('');
 
     body.querySelectorAll('.factledger-edit-known').forEach((button) => {
         button.addEventListener('click', () => {
             const entry = knowledgeEntries[Number(button.dataset.index)];
             if (entry) openKnownByEditor(entry);
+        });
+    });
+    body.querySelectorAll('.factledger-delete-known').forEach((button) => {
+        button.addEventListener('click', () => {
+            const entry = knowledgeEntries[Number(button.dataset.index)];
+            if (entry) deleteKnowledgeEntity(entry);
         });
     });
 }
@@ -1975,11 +1976,39 @@ function resolveEntity(ref) {
             ));
         case 'skill':
             return state.characters[ref.charId]?.skills?.find((skill) => skill.validTo == null && skill.id === ref.traitId);
-        case 'ability':
-            return state.characters[ref.charId]?.abilities?.find((ability) => ability.validTo == null && ability.id === ref.traitId);
         default:
             return null;
     }
+}
+
+/** 手动删除物品/功法：关闭当前条目，并把 remove op 追加到当前分支，回放时不复活。 */
+function deleteKnowledgeEntity(card) {
+    const state = getState();
+    const entity = resolveEntity(card.ref);
+    if (!entity) {
+        setStatus('找不到要删除的对象，可能已被删除。');
+        renderPanel();
+        return;
+    }
+    const preset = getGenrePreset(getSettings().genrePreset);
+    const isSkill = card.ref.kind === 'skill';
+    const label = isSkill ? (preset.skillLabel || '技能') : '物品';
+    const name = entity.name || card.text || '';
+    const confirmed = typeof window.confirm !== 'function'
+        || window.confirm(`从台账删除${label}「${name}」？只删台账记录，不改正文。`);
+    if (!confirmed) return;
+
+    const op = isSkill
+        ? { op: 'remove_skill', character: card.ref.charId, skill: entity.id || entity.name, reason: '手动删除' }
+        : { op: 'remove_item', character: card.ref.charId, item: entity.id || entity.name, reason: '手动删除' };
+    const appended = appendManualOp(state.meta?.history || [], getContext().chat || [], op);
+    entity.validTo = sceneTimeLabel(state.scene) || '手动删除';
+    saveState();
+    refreshInjection();
+    renderPanel();
+    setStatus(appended
+        ? `已从台账删除${label}「${name}」。`
+        : `已从当前台账删除${label}「${name}」，但没有可写入的日志记录，重算后可能恢复。`);
 }
 
 function openKnownByEditor(card) {
@@ -2051,6 +2080,24 @@ function stateValue(entry) {
     return entry?.current ?? entry;
 }
 
+/** 主角当前进度；没记过按 0，和进度条的起点一致。 */
+function progressOf(state, ownerId = '') {
+    const id = ownerId || state?.meta?.protagonistId || PROTAGONIST_ID;
+    const entry = state?.characters?.[id]?.state?.progress;
+    const value = entry && typeof entry === 'object' ? entry.current : entry;
+    const number = Number.parseFloat(value);
+    return Number.isFinite(number) ? Math.round(number) : 0;
+}
+
+/** 本轮进度变化：只看当前分支最后一条记录；旧记录没有快照就不显示。 */
+function lastRoundProgressDelta(state, chat) {
+    const branch = selectHistoryBranch(state?.meta?.history || [], chat || []);
+    const record = branch[branch.length - 1];
+    const before = Number(record?.progress?.before);
+    const after = Number(record?.progress?.after);
+    return Number.isFinite(before) && Number.isFinite(after) ? after - before : null;
+}
+
 function formatItemText(item) {
     const quantity = Number(item.quantity ?? 1);
     const unit = item.unit || '';
@@ -2061,10 +2108,6 @@ function formatItemText(item) {
 
 function currentSkills(character) {
     return (character.skills || []).filter((skill) => skill.validTo == null);
-}
-
-function currentAbilities(character) {
-    return (character.abilities || []).filter((ability) => ability.validTo == null);
 }
 
 function populateProtagonistSelect() {
@@ -2131,7 +2174,7 @@ function renderStatusBar() {
         return;
     }
     const target = getProtagonist();
-    const protagonist = target || { id: '', name: '', state: {}, items: [], relations: [], skills: [], abilities: [] };
+    const protagonist = target || { id: '', name: '', state: {}, items: [], relations: [], skills: [] };
 
     const state = getState();
     const preset = getGenrePreset(settings.genrePreset);
@@ -2178,11 +2221,15 @@ function renderStatusBar() {
         ? null
         : (Number.isFinite(progressRaw) ? Math.max(0, Math.min(100, Math.round(progressRaw))) : 0);
     const realmValue = preset.levelField ? stateValue(protagonist.state?.[preset.levelField]) : '';
+    const progressDelta = progressValue === null ? null : lastRoundProgressDelta(state, ctx.chat);
+    const progressDeltaHtml = progressDelta
+        ? `<span class="factledger-progress-delta ${progressDelta > 0 ? 'up' : 'down'}" title="本轮变化 ${progressDelta > 0 ? '+' : ''}${progressDelta}">${progressDelta > 0 ? '+' : ''}${progressDelta}</span>`
+        : '';
     const progressBar = progressValue === null ? '' : `
         <div class="factledger-progress">
             <div class="factledger-progress-meta">
                 <span>${escapeHtml([progressLabel, realmValue].filter(Boolean).join('｜'))}</span>
-                <span>${progressValue}%</span>
+                <span>${progressValue}%${progressDeltaHtml}</span>
             </div>
             <div class="factledger-progress-track">
                 <div class="factledger-progress-fill" style="width:${progressValue}%"></div>
@@ -2194,14 +2241,8 @@ function renderStatusBar() {
         [skill.name, skill.level].filter(Boolean).join('｜')
     ));
 
-    const abilityLines = currentAbilities(protagonist).map((ability) => (
-        [ability.name, ability.level].filter(Boolean).join('｜')
-    ));
-
-    // 功法与神通合并到一个面板；都没有时也显示「无」。
     const artLines = [];
-    if (skillLines.length) artLines.push(`${preset.skillLabel || '技能'}：${skillLines.join('、')}`);
-    if (abilityLines.length) artLines.push(`${preset.abilityLabel || '能力'}：${abilityLines.join('、')}`);
+    if (skillLines.length) artLines.push(skillLines.join('、'));
     if (!artLines.length) artLines.push('无');
 
     const items = (protagonist.items || []).filter((item) => item.validTo == null);
@@ -2228,13 +2269,23 @@ function renderStatusBar() {
 
     const relationLines = [];
     const participantIds = (state.scene?.participants || []).filter((pid) => pid !== id);
+    // 宗门列只在题材定义了该字段时出现；修仙显示「宗门」，其他题材不多一列。
+    const sectLabel = preset.fieldLabels?.sect || '';
     for (const pid of participantIds) {
         const npc = state.characters[pid];
         if (!npc) {
-            relationLines.push([pid, '未知', '未知', '—', '未知'].join('｜'));
+            relationLines.push([
+                pid,
+                '未知',
+                ...(sectLabel ? ['未知'] : []),
+                '未知',
+                '—',
+                '未知',
+            ].join('｜'));
             continue;
         }
         const gender = stateValue(npc.state?.gender);
+        const sect = sectLabel ? stateValue(npc.state?.sect) : '';
         const levelEntry = preset.levelField ? npc.state?.[preset.levelField] : null;
         const level = stateValue(levelEntry);
         const tierText = ACCESS_LABELS[characterAccess(npc)] || characterAccess(npc);
@@ -2248,6 +2299,7 @@ function renderStatusBar() {
         relationLines.push([
             npc.name || pid,
             gender || '未知',
+            ...(sectLabel ? [sect || '未知'] : []),
             level || '未知',
             relationType,
             tierText,
@@ -2261,9 +2313,9 @@ function renderStatusBar() {
     const panels = [
         { key: 'world', title: '状态', lines: worldLines },
         { key: 'personal', title: '个人状态', lines: personalLines, extra: progressBar },
-        { key: 'arts', title: `${preset.skillLabel || '技能'}与${preset.abilityLabel || '能力'}`, lines: artLines },
+        { key: 'arts', title: preset.skillLabel || '技能', lines: artLines },
         { key: 'items', title: '物品', lines: itemLines },
-        { key: 'relations', title: '关系', lines: relationLines, head: `人物｜性别｜${levelLabel}｜关系｜档位` },
+        { key: 'relations', title: '关系', lines: relationLines, head: `人物｜性别${sectLabel ? `｜${sectLabel}` : ''}｜${levelLabel}｜关系｜档位` },
     ].filter((panel) => panel.lines.length || panel.extra);
 
     if (!panels.length && !settlePending) {
@@ -2346,7 +2398,6 @@ function renderHealth(body) {
         knowledgeGate: settings.knowledgeGate,
         showOthers: settings.showOthers,
         skillLabel: preset.skillLabel,
-        abilityLabel: preset.abilityLabel,
         fieldLabels: preset.fieldLabels,
         recentText: '',
         fieldOrder: preset.fieldOrder,
@@ -2354,6 +2405,7 @@ function renderHealth(body) {
         protagonistName: getContext().name1,
     });
     const issues = healthCheck(state, { injection, tokenBudget: settings.injectBudget });
+    const missingGenders = missingGenderCharacters(state);
     const history = Array.isArray(state.meta?.history) ? state.meta.history : [];
     const historyKb = Math.max(1, Math.round(JSON.stringify(history).length / 1024));
 
@@ -2396,6 +2448,14 @@ function renderHealth(body) {
             <div><strong>健康检查</strong></div>
             ${issues.length ? issues.map((item) => `<div class="factledger-muted">${escapeHtml(item)}</div>`).join('') : '<div class="factledger-muted">无告警</div>'}
         </div>
+        ${missingGenders.length ? `
+        <div class="factledger-card">
+            <div><strong>性别缺失</strong> <span class="factledger-badge warn">${missingGenders.length}</span></div>
+            <div class="factledger-muted">以下在场角色建档时没有写 gender，点名字补录。</div>
+            <div class="factledger-actions">
+                ${missingGenders.map((character) => `<button class="menu_button" data-gender-fix="${escapeHtml(character.id)}">${escapeHtml(character.name || character.id)}</button>`).join('')}
+            </div>
+        </div>` : ''}
         <details class="factledger-card">
             <summary><strong>注入预览</strong></summary>
             <pre style="white-space:pre-wrap;font-size:0.8em;">${escapeHtml(injection || '（空）')}</pre>
@@ -2415,12 +2475,70 @@ function renderHealth(body) {
     body.querySelectorAll('[data-review-dismiss]').forEach((button) => {
         button.addEventListener('click', () => dismissReview(Number(button.dataset.reviewDismiss)));
     });
+    body.querySelectorAll('[data-gender-fix]').forEach((button) => {
+        button.addEventListener('click', () => openGenderEditor(button.dataset.genderFix));
+    });
+}
+
+/** 健康页的性别补录：只改字段，不动正文与日志。 */
+function openGenderEditor(characterId) {
+    const character = getState().characters?.[characterId];
+    if (!character) {
+        setStatus('找不到这个角色。');
+        return;
+    }
+    const current = String(character.state?.gender?.current || '');
+    const options = ['男', '女', '未知']
+        .map((value) => `<option value="${value}" ${value === current ? 'selected' : ''}>${value}</option>`)
+        .join('');
+    document.getElementById('factledger_gender_modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'factledger_gender_modal';
+    modal.className = 'factledger-modal';
+    modal.innerHTML = `
+        <div class="factledger-modal-content">
+            <div class="factledger-modal-head">
+                <strong>补录性别</strong>
+                <span class="factledger-modal-close" title="关闭">✕</span>
+            </div>
+            <div class="factledger-muted">角色：${escapeHtml(character.name || character.id)}</div>
+            <div class="factledger-row">
+                <label for="factledger_gender_value">性别</label>
+                <select id="factledger_gender_value">${options}</select>
+            </div>
+            <div class="factledger-actions">
+                <button class="menu_button" id="factledger_gender_save">保存</button>
+                <button class="menu_button" id="factledger_gender_cancel">取消</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    const close = () => modal.remove();
+    modal.querySelector('.factledger-modal-close')?.addEventListener('click', close);
+    modal.querySelector('#factledger_gender_cancel')?.addEventListener('click', close);
+    modal.querySelector('#factledger_gender_save')?.addEventListener('click', () => {
+        const value = document.getElementById('factledger_gender_value')?.value || '未知';
+        appendManualField(getState().meta?.history || [], getContext().chat || [], characterId, 'gender', value);
+        if (!character.state) character.state = {};
+        const entry = character.state.gender && typeof character.state.gender === 'object'
+            ? character.state.gender
+            : { current: '', history: [] };
+        entry.current = value;
+        if (!Array.isArray(entry.history)) entry.history = [];
+        character.state.gender = entry;
+        saveState();
+        refreshInjection();
+        close();
+        renderPanel();
+        setStatus(`已把「${character.name || character.id}」的性别补为${value}。`);
+    });
 }
 
 /** 低置信 op 的可读摘要，避免在面板里糊一整段 JSON。 */
 function describeReviewOp(op) {
     const parts = [String(op?.op || 'op')];
-    for (const key of ['character', 'field', 'value', 'item', 'skill', 'ability', 'relation', 'to', 'access', 'reason']) {
+    for (const key of ['character', 'field', 'value', 'item', 'skill', 'relation', 'to', 'access', 'reason']) {
         if (op?.[key] === undefined || op?.[key] === null || op?.[key] === '') continue;
         const value = typeof op[key] === 'object' ? JSON.stringify(op[key]) : String(op[key]);
         parts.push(`${key}=${value}`);
@@ -2434,7 +2552,6 @@ function leakRevealTarget(state, leak) {
     const target = leak.target || {};
     if (target.item) return { item: target.item, label: target.item };
     if (target.skill) return { skill: target.skill, label: target.skill };
-    if (target.ability) return { ability: target.ability, label: target.ability };
     if (target.relation) return { relation: target.relation, label: `关系 ${target.relation}` };
     if (target.character && target.field) {
         const name = state.characters?.[target.character]?.name || target.character;
@@ -2460,7 +2577,6 @@ function acknowledgeLeak(index) {
         method: '叙事中已经泄露，按已知处理',
         ...(target.item ? { item: target.item } : {}),
         ...(target.skill ? { skill: target.skill } : {}),
-        ...(target.ability ? { ability: target.ability } : {}),
         ...(target.relation ? { relation: target.relation } : {}),
         ...(target.character && target.field ? { character: target.character, field: target.field } : {}),
         evidence: 'msg:0',
@@ -2769,7 +2885,6 @@ function checkRecentLeaks() {
         getGenrePreset(getSettings().genrePreset).fieldLabels,
         {
             skillLabel: getGenrePreset(getSettings().genrePreset).skillLabel,
-            abilityLabel: getGenrePreset(getSettings().genrePreset).abilityLabel,
         },
     );
     state.meta.leaks = leaks;
@@ -2795,7 +2910,7 @@ function openJsonEditor() {
                 <summary>编辑说明与常用改法</summary>
                 <div class="factledger-json-help-body">
                     <p><b>结构：</b><code>characters</code>（角色）、<code>scene</code>（场景）、<code>meta</code>（版本日志等）。主角固定 <code>id: "user"</code>。</p>
-                    <p><b>档位：</b><code>public</code>（人人皆知）&lt; <code>friend</code> &lt; <code>intimate</code> &lt; <code>protagonist</code>（只有你知道）。字段、物品、功法、神通、关系上都有 <code>access</code>。</p>
+                    <p><b>档位：</b><code>public</code>（人人皆知）&lt; <code>friend</code> &lt; <code>intimate</code> &lt; <code>protagonist</code>（只有你知道）。字段、物品、功法、关系上都有 <code>access</code>。</p>
                     <ul>
                         <li>改谁知道：把该条目的 <code>"access"</code> 改成 <code>"friend"</code> / <code>"intimate"</code> / <code>"protagonist"</code>。</li>
                         <li>改字段值：<code>characters.user.state.realm.current</code>。</li>

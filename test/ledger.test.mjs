@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
     createEmptyState,
     normalizeState,
@@ -19,6 +22,9 @@ import {
     findReplayPoint,
     replayHistory,
     healthCheck,
+    missingGenderCharacters,
+    appendManualField,
+    appendManualOp,
     entityAccess,
     characterAccess,
     knowsEntity,
@@ -49,9 +55,9 @@ function findCharacter(state, name) {
 /** 主角 + 朋友级苏绾 + 公开级王掌柜，用于测按剧情定档。 */
 function tierState() {
     const state = createEmptyState();
-    state.characters.user = { id: 'user', name: '你', tier: 'main', access: 'protagonist', state: {}, items: [], relations: [], skills: [], abilities: [] };
-    state.characters.su = { id: 'su', name: '苏绾', tier: 'major', access: 'friend', state: {}, items: [], relations: [], skills: [], abilities: [] };
-    state.characters.wang = { id: 'wang', name: '王掌柜', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [], abilities: [] };
+    state.characters.user = { id: 'user', name: '你', tier: 'main', access: 'protagonist', state: {}, items: [], relations: [], skills: [] };
+    state.characters.su = { id: 'su', name: '苏绾', tier: 'major', access: 'friend', state: {}, items: [], relations: [], skills: [] };
+    state.characters.wang = { id: 'wang', name: '王掌柜', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [] };
     return state;
 }
 
@@ -132,7 +138,7 @@ test('reveal 放宽档位', () => {
     let state = createEmptyState();
     state.characters.su_wan = {
         id: 'su_wan', name: '苏婉', tier: 'npc', access: 'friend',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     let result = run(state, [
         { op: 'add_item', character: 'user', item: { name: '混沌珠', kind: 'artifact', access: 'protagonist' }, evidence: 'msg:10', confidence: 0.95 },
@@ -152,11 +158,11 @@ test('被动暴露给公开级目击者不降档，显式当众公开才降档',
     let state = createEmptyState();
     state.characters.user = {
         id: 'user', name: '你', tier: 'main', access: 'protagonist',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state.characters.zhao = {
         id: 'zhao', name: '赵长老', tier: 'major', access: 'public',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state.characters.user.items.push({
         id: 'i_jade', name: '玉牌', kind: 'artifact', quantity: 1, unit: '', holder: 'user',
@@ -388,9 +394,9 @@ test('detectLeaks 标记档位不够却被提到的秘密', () => {
             id: 'user', name: '你', tier: 'main', access: 'protagonist',
             state: {},
             items: [{ id: 'i_orb', name: '混沌珠', kind: 'artifact', quantity: 1, unit: '', holder: 'user', validFrom: '', validTo: null, access: 'protagonist' }],
-            relations: [], skills: [], abilities: [],
+            relations: [], skills: [],
         },
-        su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [], abilities: [] },
+        su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [] },
     };
     const leaks = detectLeaks(state, '苏婉盯着你的袖口：“混沌珠？你藏着什么？”', ['user', 'su_wan']);
     assert.equal(leaks.length, 1);
@@ -762,75 +768,28 @@ test('assembleInjection 显示多条技能', () => {
     assert.match(text, /功法：青木诀\(第三重\)、御剑术\(入门\)/);
 });
 
-test('多神通：add_ability / set_ability / remove_ability', () => {
-    let state = createEmptyState();
-    state.meta.protagonistId = 'lin_yuan';
-    let result = run(state, [
-        { op: 'add_ability', character: 'lin_yuan', characterName: '林远', ability: { id: 'ab_feng', name: '御风诀', level: '入门' }, validFrom: '第一日 晨', evidence: 'msg:1', confidence: 0.9 },
-        { op: 'add_ability', character: 'lin_yuan', ability: { id: 'ab_jian', name: '裂空剑', level: '小成' }, validFrom: '第二日 晨', evidence: 'msg:2', confidence: 0.9 },
-    ]);
-    state = result.state;
-    assert.equal(state.characters.lin_yuan.abilities.length, 2);
-    assert.equal(state.characters.lin_yuan.skills.length, 0);
-
-    result = run(state, [
-        { op: 'set_ability', character: 'lin_yuan', ability: 'ab_feng', level: '小成', validFrom: '第三日 晨', evidence: 'msg:3', confidence: 0.9 },
-    ]);
-    state = result.state;
-    const wind = state.characters.lin_yuan.abilities.find((ability) => ability.id === 'ab_feng' && ability.validTo == null);
-    assert.equal(wind.level, '小成');
-    assert.equal(wind.history.length, 1);
-
-    result = run(state, [
-        { op: 'remove_ability', ability: 'ab_jian', reason: '被废', validFrom: '第四日 夜', evidence: 'msg:4', confidence: 0.9 },
-    ]);
-    state = result.state;
-    assert.ok(state.characters.lin_yuan.abilities.find((ability) => ability.id === 'ab_jian').validTo);
-});
-
-test('assembleInjection 把功法与神通分开显示', () => {
-    let state = createEmptyState();
-    state.meta.protagonistId = 'lin_yuan';
-    const result = run(state, [
-        { op: 'add_skill', character: 'lin_yuan', characterName: '林远', skill: { id: 'sk_a', name: '青木诀', level: '第三重' }, validFrom: '第一日 晨', evidence: 'msg:1', confidence: 0.9 },
-        { op: 'add_ability', character: 'lin_yuan', ability: { id: 'ab_a', name: '御风诀', level: '入门', access: 'public' }, validFrom: '第一日 晨', evidence: 'msg:2', confidence: 0.9 },
-    ]);
-    state = result.state;
-    state.characters.lin_yuan.tier = 'main';
-    state.scene = { time: '夜', place: '客栈', participants: ['lin_yuan'] };
-    const text = assembleInjection(state, {
-        tokenBudget: 3000,
-        activeCharacterIds: ['lin_yuan'],
-        protagonistId: 'lin_yuan',
-        skillLabel: '功法',
-        abilityLabel: '神通',
-    });
-    assert.match(text, /功法：青木诀\(第三重\)/);
-    assert.match(text, /神通：御风诀\(入门\)/);
-});
-
-test('修仙预设包含外貌体型与神通说明', () => {
+test('修仙预设包含外貌体型与功法说明', () => {
     const preset = getGenrePreset('xianxia');
     assert.equal(preset.fieldLabels.appearance, '外貌体型');
-    assert.match(preset.hint, /add_ability/);
+    assert.match(preset.hint, /add_skill/);
     assert.match(preset.hint, /身材魁梧/);
 });
 
-test('秘密神通与其他秘密一样隔离注入', () => {
+test('秘密功法与其他秘密一样隔离注入', () => {
     let state = createEmptyState();
     state.meta.protagonistId = 'lin_yuan';
     const result = run(state, [
-        { op: 'add_ability', character: 'lin_yuan', characterName: '林远', ability: { id: 'ab_feng', name: '御风诀', level: '入门', access: 'protagonist' }, validFrom: '第一日 晨', evidence: 'msg:1', confidence: 0.9 },
-        { op: 'add_ability', character: 'lin_yuan', ability: { id: 'ab_jian', name: '裂空剑', level: '小成', access: 'public' }, validFrom: '第一日 晨', evidence: 'msg:2', confidence: 0.9 },
+        { op: 'add_skill', character: 'lin_yuan', characterName: '林远', skill: { id: 'sk_feng', name: '御风诀', level: '入门', access: 'protagonist' }, validFrom: '第一日 晨', evidence: 'msg:1', confidence: 0.9 },
+        { op: 'add_skill', character: 'lin_yuan', skill: { id: 'sk_jian', name: '裂空剑', level: '小成', access: 'public' }, validFrom: '第一日 晨', evidence: 'msg:2', confidence: 0.9 },
     ]);
     state = result.state;
     state.characters.lin_yuan.tier = 'main';
     state.characters.su_wan = {
         id: 'su_wan', name: '苏婉', tier: 'npc', access: 'public',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state.scene = { time: '夜', day: 3, place: '客栈', participants: ['lin_yuan', 'su_wan'] };
-    const secret = state.characters.lin_yuan.abilities.find((entry) => entry.id === 'ab_feng');
+    const secret = state.characters.lin_yuan.skills.find((entry) => entry.id === 'sk_feng');
     assert.equal(entityAccess(secret), 'protagonist');
 
     const text = assembleInjection(state, {
@@ -838,45 +797,24 @@ test('秘密神通与其他秘密一样隔离注入', () => {
         activeCharacterIds: ['lin_yuan', 'su_wan'],
         protagonistId: 'lin_yuan',
         skillLabel: '功法',
-        abilityLabel: '神通',
     });
-    assert.match(text, /神通：裂空剑\(小成\)/);
-    assert.doesNotMatch(text, /神通：.*御风诀/);
-    assert.match(text, /神通「御风诀」/);
+    assert.match(text, /功法：裂空剑\(小成\)/);
+    assert.doesNotMatch(text, /功法：.*御风诀/);
+    assert.match(text, /功法「御风诀」/);
     assert.match(text, /主角级；只有你知道/);
 });
 
-test('主角神通默认主角级', () => {
-    const result = run(createEmptyState(), [
-        { op: 'add_ability', character: 'user', ability: { id: 'ab_a', name: '噬灵诀' }, evidence: 'msg:0', confidence: 0.9 },
-    ]);
-    assert.equal(entityAccess(result.state.characters.user.abilities[0]), 'protagonist');
-});
-
-test('代码层拒绝给 NPC 建功法或神通', () => {
+test('代码层拒绝给 NPC 建功法', () => {
     const result = run(createEmptyState(), [
         { op: 'add_skill', character: '苏婉', skill: { id: 'sk_a', name: '剑诀' }, evidence: 'msg:0', confidence: 0.9 },
-        { op: 'add_ability', character: '苏婉', ability: { id: 'ab_a', name: '剑诀' }, evidence: 'msg:0', confidence: 0.9 },
     ]);
     assert.equal(findCharacter(result.state, '苏婉')?.skills?.length ?? 0, 0);
-    assert.equal(findCharacter(result.state, '苏婉')?.abilities?.length ?? 0, 0);
-    assert.equal(result.rejected.filter((item) => /NPC 不单独建功法或神通档案/.test(item.reason)).length, 2);
+    assert.equal(result.rejected.filter((item) => /NPC 不单独建功法档案/.test(item.reason)).length, 1);
 });
 
-test('提取提示严格限制神通的添加来源', () => {
-    const { system } = buildExtractionPrompt(createEmptyState(), [], { skillLabel: '功法', abilityLabel: '神通' });
-    assert.match(system, /只有两种情况写 add_ability/);
-    assert.match(system, /主角自己给招式起名/);
-    assert.match(system, /正文明确写主角学到、习得或得到新的神通/);
-    assert.match(system, /新神通默认 access:"protagonist"/);
-    assert.match(system, /NPC 只保留最小档案/);
-    assert.match(system, /不要给 NPC 单独建功法、神通、物品或秘密档案/);
-});
-
-test('技能与能力的叫法跟着题材，不写死修仙词', () => {
-    const urban = buildExtractionPrompt(createEmptyState(), [], { skillLabel: '技能/专长', abilityLabel: '特长' }).system;
+test('功法的叫法跟着题材，不写死修仙词', () => {
+    const urban = buildExtractionPrompt(createEmptyState(), [], { skillLabel: '技能/专长' }).system;
     assert.match(urban, /技能\/专长用 add_skill/);
-    assert.match(urban, /特长用 add_ability/);
     assert.doesNotMatch(urban, /功法|神通/);
 });
 
@@ -890,7 +828,7 @@ test('秘密功法可以用 set_skill 改档，并用 reveal 放宽', () => {
     state.characters.lin_yuan.tier = 'main';
     state.characters.su_wan = {
         id: 'su_wan', name: '苏婉', tier: 'npc', access: 'friend',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state = run(state, [
         { op: 'reveal', skill: 'sk_sword', to: 'su_wan', by: 'lin_yuan', method: '当面运功', validFrom: '第三日 晨', evidence: 'msg:3', confidence: 0.9 },
@@ -903,9 +841,9 @@ test('秘密功法可以用 set_skill 改档，并用 reveal 放宽', () => {
 test('重记秘密功法保档位，物品转手跟着持有人放宽', () => {
     let state = createEmptyState();
     state.meta.protagonistId = 'lin_yuan';
-    state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', state: {}, items: [], relations: [], skills: [], abilities: [] };
-    state.characters.su_wan = { id: 'su_wan', name: '苏婉', tier: 'npc', access: 'friend', state: {}, items: [], relations: [], skills: [], abilities: [] };
-    state.characters.wang_shi = { id: 'wang_shi', name: '王掌柜', tier: 'npc', access: 'intimate', state: {}, items: [], relations: [], skills: [], abilities: [] };
+    state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', state: {}, items: [], relations: [], skills: [] };
+    state.characters.su_wan = { id: 'su_wan', name: '苏婉', tier: 'npc', access: 'friend', state: {}, items: [], relations: [], skills: [] };
+    state.characters.wang_shi = { id: 'wang_shi', name: '王掌柜', tier: 'npc', access: 'intimate', state: {}, items: [], relations: [], skills: [] };
     state = run(state, [
         { op: 'add_skill', character: 'lin_yuan', characterName: '林远', skill: { id: 'sk_hidden', name: '噬灵诀', access: 'protagonist' }, validFrom: '第一日', evidence: 'msg:1', confidence: 0.9 },
         { op: 'add_item', character: 'lin_yuan', item: { id: 'i_jade', name: '缺角玉牌', access: 'protagonist' }, validFrom: '第一日', evidence: 'msg:2', confidence: 0.9 },
@@ -1051,7 +989,7 @@ test('提取提示的当前台账带上角色字段与档位', () => {
     state.characters.user = {
         id: 'user', name: '你', tier: 'main', access: 'protagonist',
         state: { realm: { current: '筑基一层', history: [], access: 'protagonist' } },
-        items: [], relations: [], skills: [], abilities: [],
+        items: [], relations: [], skills: [],
     };
     const { user } = buildExtractionPrompt(state, []);
     assert.match(user, /realm/);
@@ -1062,7 +1000,7 @@ test('提取提示的当前台账带上角色别名', () => {
     const state = createEmptyState();
     state.characters.su = {
         id: 'su', name: '苏绾', aliases: ['月白长裙女修'], tier: 'major', access: 'friend',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     const { user } = buildExtractionPrompt(state, []);
     assert.match(user, /月白长裙女修/);
@@ -1190,7 +1128,7 @@ test('旧数据的 NPC 关系迁移到主角侧，NPC 关系清空', () => {
     const state = createEmptyState();
     state.characters.user = {
         id: 'user', name: '你', tier: 'main', access: 'protagonist',
-        state: {}, items: [], skills: [], abilities: [],
+        state: {}, items: [], skills: [],
         relations: [{
             target: 'npc_a', targetName: '苏清雪', type: '暧昧交易', validFrom: '', validTo: null,
             evidence: 'msg:26', confidence: 0.7, access: 'public',
@@ -1198,7 +1136,7 @@ test('旧数据的 NPC 关系迁移到主角侧，NPC 关系清空', () => {
     };
     state.characters.npc_a = {
         id: 'npc_a', name: '苏清雪', tier: 'major', access: 'public',
-        state: {}, items: [], skills: [], abilities: [],
+        state: {}, items: [], skills: [],
         relations: [{
             target: 'user', targetName: '你', type: '道侣', address: '师姐', validFrom: '',
             validTo: null, evidence: 'msg:74', confidence: 0.8, access: 'public',
@@ -1216,7 +1154,7 @@ test('有主角时 NPC 与 NPC 的关系不建档', () => {
     const state = createEmptyState();
     state.characters.user = {
         id: 'user', name: '你', tier: 'main', access: 'protagonist',
-        state: {}, items: [], skills: [], abilities: [], relations: [],
+        state: {}, items: [], skills: [], relations: [],
     };
     run(state, [
         { op: 'set_relation', from: '苏婉', to: '王掌柜', type: '同门', evidence: 'msg:1', confidence: 0.9 },
@@ -1469,7 +1407,7 @@ test('reveal 可以用物品名定位，并把档位放宽', () => {
     let state = createEmptyState();
     state.characters.su = {
         id: 'su', name: '苏绾', tier: 'npc', access: 'friend',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state = run(state, [
         { op: 'add_item', character: 'user', item: { id: 'i_yu', name: '残缺符文的玉牌', access: 'protagonist' }, evidence: 'msg:0', confidence: 0.9 },
@@ -1486,11 +1424,11 @@ test('提取提示里的角色键与引用都用姓名，不暴露内部 id', ()
     const state = createEmptyState();
     state.characters.user = {
         id: 'user', name: '你', tier: 'main', access: 'protagonist',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state.characters.npc_001 = {
         id: 'npc_001', name: '苏绾', tier: 'major', access: 'friend',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state.characters.user.relations.push({
         target: 'npc_001', targetName: '苏绾', type: '同门',
@@ -1540,9 +1478,9 @@ test('预算极紧时整段裁剪，秘密块仍保留', () => {
 
 test('注入把知情写成正文优先，并给出台账默认', () => {
     const state = createEmptyState();
-    state.characters.user = { id: 'user', name: '你', tier: 'main', access: 'protagonist', state: {}, items: [], relations: [], skills: [], abilities: [] };
-    state.characters.su = { id: 'su', name: '苏绾', tier: 'major', access: 'friend', state: {}, items: [], relations: [], skills: [], abilities: [] };
-    state.characters.wang = { id: 'wang', name: '王掌柜', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [], abilities: [] };
+    state.characters.user = { id: 'user', name: '你', tier: 'main', access: 'protagonist', state: {}, items: [], relations: [], skills: [] };
+    state.characters.su = { id: 'su', name: '苏绾', tier: 'major', access: 'friend', state: {}, items: [], relations: [], skills: [] };
+    state.characters.wang = { id: 'wang', name: '王掌柜', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [] };
     state.characters.user.items.push({
         id: 'i_jade', name: '玉牌', kind: 'artifact', quantity: 1, unit: '', holder: 'user',
         validFrom: '', validTo: null, access: 'friend',
@@ -1769,7 +1707,7 @@ test('注入渲染 NPC 对玩家的称呼', () => {
 });
 
 test('parseExtractionResponse 容忍字符串里的裸换行', () => {
-    const text = '{"ops":[{"op":"set","character":"user","field":"situation","value":"第一行\n第二行"}],"leaks":[]}';
+    const text = '{"ops":[{"op":"set","character":"user","field":"appearance","value":"第一行\n第二行"}],"leaks":[]}';
     const data = parseExtractionResponse(text);
     assert.equal(data.ops[0].value, '第一行\n第二行');
 });
@@ -1844,9 +1782,9 @@ test('adjust_item 接受对象形式的 item', () => {
 
 test('状态文本里的 user 归一化为「你」', () => {
     const result = run(createEmptyState(), [
-        { op: 'set', character: 'user', field: 'situation', value: '效忠 user 的旧仆围在门外', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'appearance', value: '效忠 user 的旧仆围在门外', evidence: 'msg:0', confidence: 0.9 },
     ]);
-    assert.equal(result.state.characters.user.state.situation.current, '效忠 你 的旧仆围在门外');
+    assert.equal(result.state.characters.user.state.appearance.current, '效忠 你 的旧仆围在门外');
 });
 
 test('代码层不收录 status 字段', () => {
@@ -2057,7 +1995,7 @@ test('对抗：自定义主角换境界同样会归零', () => {
             realm: { current: '练气大圆满', history: [], access: 'public' },
             progress: { current: 80, history: [], access: 'protagonist' },
         },
-        items: [], relations: [], skills: [], abilities: [],
+        items: [], relations: [], skills: [],
     };
     state.meta.protagonistId = 'lin';
     const result = run(state, [
@@ -2158,29 +2096,29 @@ function promoteState() {
         { op: 'set', character: 'user', field: 'gender', value: '男', evidence: 'msg:0', confidence: 0.9 },
         { op: 'set', character: 'user', field: 'name', value: '林远', evidence: 'msg:0', confidence: 0.9 },
         { op: 'set', character: 'user', field: 'appearance', value: '身材魁梧', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'physique', value: '凡体', access: 'public', evidence: 'msg:0', confidence: 0.9 },
         { op: 'set', character: 'user', field: 'progress', value: 30, evidence: 'msg:0', confidence: 0.9 },
         { op: 'add_item', character: 'user', item: { id: 'i_jade', name: '玉牌' }, evidence: 'msg:0', confidence: 0.9 },
         { op: 'add_item', character: 'user', item: { id: 'i_gold', name: '灵石', kind: 'currency', quantity: 3 }, evidence: 'msg:0', confidence: 0.9 },
         { op: 'add_skill', character: 'user', skill: { name: '青木诀' }, evidence: 'msg:0', confidence: 0.9 },
-        { op: 'add_ability', character: 'user', ability: { name: '御风诀', access: 'public' }, evidence: 'msg:0', confidence: 0.9 },
         { op: 'set_relation', from: 'user', to: '苏婉', type: '同门', evidence: 'msg:0', confidence: 0.9 },
     ]).state;
 }
 
-test('公开项定期上调：字段/物品/功法/神通升到朋友级，跳过性别、姓名、进度与关系', () => {
+test('公开项定期上调：字段/物品/功法升到朋友级，跳过性别、姓名、外貌体型、进度与关系', () => {
     const state = promoteState();
     const promoted = promotePublicEntries(state, 'user');
     const user = state.characters.user;
-    assert.equal(entityAccess(user.state.appearance), 'friend');
+    assert.equal(entityAccess(user.state.appearance), 'public');
+    assert.equal(entityAccess(user.state.physique), 'friend');
     assert.equal(entityAccess(user.state.gender), 'public');
     assert.equal(entityAccess(user.state.name), 'friend');
     assert.equal(entityAccess(user.state.progress), 'protagonist');
     assert.equal(entityAccess(user.items.find((item) => item.id === 'i_jade')), 'friend');
     assert.equal(entityAccess(user.items.find((item) => item.id === 'i_gold')), 'friend');
     assert.equal(entityAccess(user.skills[0]), 'friend');
-    assert.equal(entityAccess(user.abilities[0]), 'friend');
     assert.equal(entityAccess(user.relations[0]), 'public');
-    assert.equal(promoted, 5);
+    assert.equal(promoted, 4);
     // 幂等：全部升过之后再扫一次不产生变化。
     assert.equal(promotePublicEntries(state, 'user'), 0);
 });
@@ -2199,7 +2137,7 @@ test('promote_public 作为 op 落账并能被回放', () => {
     const state = promoteState();
     const result = run(state, [{ op: 'promote_public' }]);
     assert.equal(result.rejected.length, 0);
-    assert.equal(entityAccess(result.state.characters.user.state.appearance), 'friend');
+    assert.equal(entityAccess(result.state.characters.user.state.appearance), 'public');
 
     const replayed = replayHistory([{
         to: 0,
@@ -2210,7 +2148,7 @@ test('promote_public 作为 op 落账并能被回放', () => {
             { op: 'promote_public', count: 2 },
         ],
     }]);
-    assert.equal(entityAccess(replayed.characters.user.state.appearance), 'friend');
+    assert.equal(entityAccess(replayed.characters.user.state.appearance), 'public');
     assert.equal(entityAccess(replayed.characters.user.items[0]), 'friend');
 });
 
@@ -2329,7 +2267,7 @@ test('稳定 ID：merge_character 迁移数据与引用', () => {
 test('reveal 公开条目是空操作，不会把它变成秘密', () => {
     let state = createEmptyState();
     state.meta.protagonistId = 'lin_yuan';
-    state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', state: {}, items: [], relations: [], skills: [], abilities: [] };
+    state.characters.lin_yuan = { id: 'lin_yuan', name: '林远', tier: 'main', state: {}, items: [], relations: [], skills: [] };
     state = run(state, [
         { op: 'add_skill', character: 'lin_yuan', skill: { id: 'sk_open', name: '御剑术' }, evidence: 'msg:1', confidence: 0.9 },
     ]).state;
@@ -2472,12 +2410,12 @@ test('旧关系里的 attitude 在归一化时清掉，也不再进注入', () =
     const state = createEmptyState();
     state.characters.user = {
         id: 'user', name: '你', tier: 'main', access: 'protagonist', state: {},
-        items: [], skills: [], abilities: [],
+        items: [], skills: [],
         relations: [{ target: 'su', targetName: '苏绾', type: '同门', attitude: '带着侵略性的好奇', validFrom: '', validTo: null, access: 'public' }],
     };
     state.characters.su = {
         id: 'su', name: '苏绾', tier: 'major', access: 'friend',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     const normalized = normalizeState(state);
     assert.equal(normalized.characters.user.relations[0].attitude, undefined);
@@ -2565,11 +2503,10 @@ test('reveal 可以指向同一轮由其他 op 建档的新角色', () => {
     assert.ok(findCharacter(result.state, '王掌柜'));
 });
 
-test('每个题材预设都有技能与能力标签', () => {
+test('每个题材预设都有功法标签', () => {
     for (const id of ['xianxia', 'urban', 'scifi', 'mystery', 'romance', 'custom']) {
         const preset = getGenrePreset(id);
         assert.ok(preset.skillLabel, `${id} 缺少 skillLabel`);
-        assert.ok(preset.abilityLabel, `${id} 缺少 abilityLabel`);
     }
 });
 
@@ -2680,9 +2617,9 @@ test('泄露检测只看对话，旁白提到秘密不算', () => {
             id: 'user', name: '你', tier: 'main', access: 'protagonist',
             state: {},
             items: [{ id: 'i_orb', name: '混沌珠', kind: 'artifact', quantity: 1, unit: '', holder: 'user', validFrom: '', validTo: null, access: 'protagonist' }],
-            relations: [], skills: [], abilities: [],
+            relations: [], skills: [],
         },
-        su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [], abilities: [] },
+        su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [] },
     };
     const narration = '苏婉看着你怀里的混沌珠，什么也没问。';
     assert.equal(detectLeaks(state, narration, ['user', 'su_wan']).length, 0);
@@ -2697,9 +2634,9 @@ test('泄露检测支持多种对话引号，未闭合引号只取到行尾', ()
             id: 'user', name: '你', tier: 'main', access: 'protagonist',
             state: {},
             items: [{ id: 'i_orb', name: '混沌珠', kind: 'artifact', quantity: 1, unit: '', holder: 'user', validFrom: '', validTo: null, access: 'protagonist' }],
-            relations: [], skills: [], abilities: [],
+            relations: [], skills: [],
         },
-        su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [], abilities: [] },
+        su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [] },
     };
     const variants = [
         '苏婉：「混沌珠？」',
@@ -2720,9 +2657,9 @@ test('两字以内的泛词片段不再误报', () => {
         user: {
             id: 'user', name: '你', tier: 'main', access: 'protagonist',
             state: { spiritRoot: { current: '五行杂灵根', history: [], access: 'protagonist' } },
-            items: [], relations: [], skills: [], abilities: [],
+            items: [], relations: [], skills: [],
         },
-        su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [], abilities: [] },
+        su_wan: { id: 'su_wan', name: '苏婉', tier: 'major', access: 'public', state: {}, items: [], relations: [], skills: [] },
     };
     // 只说「灵根」这种两字泛词，不该算说破具体灵根。
     assert.equal(detectLeaks(state, '女修：“灵根？”', ['user', 'su_wan']).length, 0);
@@ -2872,7 +2809,7 @@ test('旧 technique 字段迁移成 skills，旧 location 补进 scene.place', (
             technique: { current: '引灵锻体', history: [], evidence: 'msg:3', confidence: 0.7, access: 'protagonist' },
             location: { current: '青云宗', history: [] },
         },
-        items: [], relations: [], skills: [], abilities: [],
+        items: [], relations: [], skills: [],
     };
     state.scene = { time: '', day: 1, place: '', participants: ['user'] };
 
@@ -2889,9 +2826,9 @@ test('旧 technique 字段迁移成 skills，旧 location 补进 scene.place', (
     assert.equal(again.characters.user.skills.length, 1);
 });
 
-test('NPC 不记录进度与功法神通，旧数据加载时清掉', () => {
+test('NPC 不记录进度与功法，旧数据加载时清掉', () => {
     const state = createEmptyState();
-    state.characters.user = { id: 'user', name: '你', tier: 'main', state: {}, items: [], relations: [], skills: [], abilities: [] };
+    state.characters.user = { id: 'user', name: '你', tier: 'main', state: {}, items: [], relations: [], skills: [] };
     state.characters.su = {
         id: 'su', name: '苏绾', access: 'friend', state: {
             progress: { current: 40, history: [] },
@@ -2905,7 +2842,7 @@ test('NPC 不记录进度与功法神通，旧数据加载时清掉', () => {
     assert.equal(normalized.characters.su.state.progress, undefined);
     assert.equal(normalized.characters.su.state.technique, undefined);
     assert.equal(normalized.characters.su.skills.length, 0);
-    assert.equal(normalized.characters.su.abilities.length, 0);
+    assert.equal(normalized.characters.su.abilities, undefined);
 
     const result = run(createEmptyState(), [
         { op: 'set', character: '执事甲', field: 'progress', value: 10, evidence: 'msg:0', confidence: 0.9 },
@@ -2958,11 +2895,11 @@ test('有主角时，残留 tier:main 的 NPC 也不能建功法', () => {
     state.meta.protagonistId = 'lin_yuan';
     state.characters.lin_yuan = {
         id: 'lin_yuan', name: '林远', tier: 'main', access: 'protagonist',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state.characters.wang = {
         id: 'wang', name: '王掌柜', tier: 'main', access: 'public',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     const result = run(state, [
         { op: 'add_skill', character: '王掌柜', skill: { name: '青木诀' }, evidence: 'msg:0', confidence: 0.9 },
@@ -2972,7 +2909,7 @@ test('有主角时，残留 tier:main 的 NPC 也不能建功法', () => {
     assert.equal(result.state.characters.wang.skills.length, 0);
 });
 
-test('合并进 NPC 时不带功法、神通与进度', () => {
+test('合并进 NPC 时不带功法与进度', () => {
     const state = createEmptyState();
     state.meta.protagonistId = 'user';
     state.characters.tmp = {
@@ -2980,18 +2917,17 @@ test('合并进 NPC 时不带功法、神通与进度', () => {
         state: { progress: { current: 30, history: [] } },
         items: [], relations: [],
         skills: [{ id: 'sk_a', name: '青木诀', validTo: null, access: 'public' }],
-        abilities: [{ id: 'ab_a', name: '御风诀', validTo: null, access: 'public' }],
     };
     state.characters.real = {
         id: 'real', name: '周执事', tier: 'npc', access: 'public',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     const result = run(state, [
         { op: 'merge_character', from: 'tmp', to: 'real', evidence: 'msg:0', confidence: 0.9 },
     ]);
     const merged = result.state.characters.real;
     assert.equal(merged.skills.length, 0);
-    assert.equal(merged.abilities.length, 0);
+    assert.equal(merged.abilities, undefined);
     assert.equal(merged.state.progress, undefined);
 });
 
@@ -3008,6 +2944,25 @@ test('NPC 只允许性别与题材的等级字段', () => {
     assert.equal(npc.state.appearance, undefined);
     assert.equal(npc.state.age, undefined);
     assert.equal(result.rejected.filter((item) => /NPC 只记性别与等级字段/.test(item.reason)).length, 2);
+});
+
+test('NPC 可记题材额外放行的宗门字段', () => {
+    const allowed = run(createEmptyState(), [
+        { op: 'set', character: '苏婉', field: 'sect', value: '青云宗', evidence: 'msg:0', confidence: 0.9 },
+    ], { npcFields: ['realm', 'sect'] });
+    assert.equal(findCharacter(allowed.state, '苏婉').state.sect.current, '青云宗');
+
+    const rejected = run(createEmptyState(), [
+        { op: 'set', character: '苏婉', field: 'sect', value: '青云宗', evidence: 'msg:0', confidence: 0.9 },
+    ], { npcFields: ['realm'] });
+    assert.equal(rejected.rejected.length, 1);
+});
+
+test('提取提示只在题材放行时提到 NPC 宗门', () => {
+    const withSect = buildExtractionPrompt(createEmptyState(), [], { npcExtraFieldLabels: ['宗门'] }).system;
+    assert.match(withSect, /性别、宗门、等级字段/);
+    const withoutSect = buildExtractionPrompt(createEmptyState(), []).system;
+    assert.doesNotMatch(withoutSect, /性别、宗门/);
 });
 
 test('每个题材都声明等级字段', () => {
@@ -3084,17 +3039,25 @@ test('提取提示只让与主角直接对话的角色进关系栏', () => {
     assert.match(system, /set_relation 只写与主角直接对话的人/);
 });
 
-test('功法泛称不建档，残缺类状态不写进 level', () => {
+test('功法泛称不建档，残缺类状态与篇章编号不写进 level', () => {
     const result = run(createEmptyState(), [
         { op: 'add_skill', character: 'user', skill: { name: '残缺功法', level: '残缺' }, evidence: 'msg:0', confidence: 0.9 },
         { op: 'add_skill', character: 'user', skill: { name: '功法残卷' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { name: '玉简残篇' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { name: '卷轴残卷' }, evidence: 'msg:0', confidence: 0.9 },
         { op: 'add_skill', character: 'user', skill: { name: '引灵锻体', level: '残缺' }, evidence: 'msg:1', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { name: '龟息纳气诀', level: '第一章' }, evidence: 'msg:2', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { name: '虎蹚步', level: '头三式' }, evidence: 'msg:3', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { name: '九幽残篇' }, evidence: 'msg:4', confidence: 0.9 },
     ]);
     const skills = result.state.characters.user.skills;
-    assert.deepEqual(skills.map((skill) => skill.name), ['引灵锻体']);
-    assert.equal(skills[0].level, '');
-    assert.equal(result.rejected.filter((item) => /泛称不记/.test(item.reason)).length, 2);
-    assert.match(buildExtractionPrompt(createEmptyState(), []).system, /泛称不算名字/);
+    assert.deepEqual(skills.map((skill) => skill.name), ['引灵锻体', '龟息纳气诀', '虎蹚步', '九幽残篇']);
+    assert.deepEqual(skills.map((skill) => skill.level), ['', '', '', '']);
+    assert.equal(result.rejected.filter((item) => /泛称不记/.test(item.reason)).length, 4);
+    const system = buildExtractionPrompt(createEmptyState(), []).system;
+    assert.match(system, /泛称不算名字/);
+    assert.match(system, /载体和残损状态也不算名字/);
+    assert.match(system, /这枚玉简/);
 });
 
 test('单条锚点：编辑前面的消息不会让后面的记录一起失效', () => {
@@ -3166,13 +3129,13 @@ test('swipe 多版本各留一条记录，按当前正文自动选分支', () =>
     const oldRecord = {
         to: 1,
         prefixHash: computePrefixHashes(oldChat)[1],
-        ops: [{ op: 'set', character: 'user', field: 'situation', value: '旧版', evidence: 'msg:1', confidence: 0.9 }],
+        ops: [{ op: 'set', character: 'user', field: 'appearance', value: '旧版', evidence: 'msg:1', confidence: 0.9 }],
         scene: { time: '', day: 1, place: '旧地', participants: ['user'] },
     };
     const newRecord = {
         to: 1,
         prefixHash: computePrefixHashes(newChat)[1],
-        ops: [{ op: 'set', character: 'user', field: 'situation', value: '新版', evidence: 'msg:1', confidence: 0.9 }],
+        ops: [{ op: 'set', character: 'user', field: 'appearance', value: '新版', evidence: 'msg:1', confidence: 0.9 }],
         scene: { time: '', day: 1, place: '新地', participants: ['user'] },
     };
     const history = [record0, oldRecord, newRecord];
@@ -3181,11 +3144,11 @@ test('swipe 多版本各留一条记录，按当前正文自动选分支', () =>
     assert.deepEqual(oldBranch.map((record) => record.to), [0, 1]);
     assert.equal(oldBranch[1], oldRecord);
     assert.equal(findReplayPoint(history, oldChat).index, 1);
-    assert.equal(replayHistory(oldBranch, 1).characters.user.state.situation.current, '旧版');
+    assert.equal(replayHistory(oldBranch, 1).characters.user.state.appearance.current, '旧版');
 
     const newBranch = selectHistoryBranch(history, newChat);
     assert.equal(newBranch[1], newRecord);
-    assert.equal(replayHistory(newBranch, 1).characters.user.state.situation.current, '新版');
+    assert.equal(replayHistory(newBranch, 1).characters.user.state.appearance.current, '新版');
 
     // 还没结算的新 swipe 没有对应记录，回放到上一条。
     assert.deepEqual(selectHistoryBranch(history, unknownChat).map((record) => record.to), [0]);
@@ -3201,13 +3164,136 @@ test('场景时间统一成日期 + 时辰，旧数据只取时辰', () => {
     assert.equal(sceneTimeLabel({ day: null, time: '' }), '');
 });
 
+test('同名功法换 id 不产生两份', () => {
+    let state = run(createEmptyState(), [
+        { op: 'add_skill', character: 'user', skill: { id: 'sk_a', name: '龟息纳气诀' }, evidence: 'msg:1', confidence: 0.9 },
+    ]).state;
+    state = run(state, [
+        { op: 'add_skill', character: 'user', skill: { id: 'sk_b', name: '龟息纳气诀' }, evidence: 'msg:2', confidence: 0.9 },
+    ]).state;
+    const open = state.characters.user.skills.filter((skill) => skill.validTo == null);
+    assert.equal(open.length, 1);
+    assert.equal(open[0].id, 'sk_a');
+});
+
+test('功法名去掉书名号，type 不再分神通', () => {
+    const state = run(createEmptyState(), [
+        { op: 'add_skill', character: 'user', skill: { name: '《虎蹚步》', type: '神通', level: '头三式' }, evidence: 'msg:1', confidence: 0.9 },
+    ]).state;
+    const open = state.characters.user.skills.filter((skill) => skill.validTo == null);
+    assert.equal(open.length, 1);
+    assert.equal(open[0].name, '虎蹚步');
+    assert.equal(open[0].type, 'technique');
+});
+
+test('重复 add_skill 不刷历史，省略层次时沿用旧层次', () => {
+    let state = run(createEmptyState(), [
+        { op: 'add_skill', character: 'user', skill: { name: '虎蹚步', level: '小成' }, evidence: 'msg:1', confidence: 0.9 },
+    ]).state;
+    state = run(state, [
+        { op: 'add_skill', character: 'user', skill: { name: '《虎蹚步》', type: '神通' }, evidence: 'msg:2', confidence: 0.9 },
+    ]).state;
+    const entries = state.characters.user.skills;
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].validTo, null);
+    assert.equal(entries[0].level, '小成');
+});
+
+test('旧数据里同名的《》条目与 type 神通在加载时合并', () => {
+    const state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main', access: 'protagonist',
+        state: {}, items: [], relations: [],
+        skills: [
+            { id: 'sk_a', name: '虎蹚步', type: '神通', level: '', validTo: null },
+            { id: 'sk_b', name: '《虎蹚步》', type: '神通', level: '小成', validTo: null },
+        ],
+    };
+    const normalized = normalizeState(state);
+    const open = normalized.characters.user.skills.filter((skill) => skill.validTo == null);
+    assert.equal(open.length, 1);
+    assert.equal(open[0].name, '虎蹚步');
+    assert.equal(open[0].level, '小成');
+    assert.equal(open[0].type, 'technique');
+});
+
 test('注入的场景时间用年月日，而不是模型给的日期串', () => {
     const state = createEmptyState();
     state.characters.user = {
         id: 'user', name: '你', tier: 'main', access: 'protagonist',
-        state: {}, items: [], relations: [], skills: [], abilities: [],
+        state: {}, items: [], relations: [], skills: [],
     };
     state.scene = { time: '午时', day: 31, place: '客栈', participants: ['user'] };
     const text = assembleInjection(state, { activeCharacterIds: ['user'], protagonistId: 'user' });
     assert.match(text, /时间：第1年2月1日 · 午时/);
+});
+
+test('在场缺性别的 NPC 被列出，主角与已有性别的不算', () => {
+    const state = createEmptyState();
+    state.characters.user = { id: 'user', name: '你', tier: 'main', state: { gender: { current: '男', history: [] } } };
+    state.characters.su = { id: 'su', name: '苏婉', tier: 'major', state: { gender: { current: '女', history: [] } } };
+    state.characters.yin = { id: 'yin', name: '银霜', tier: 'major', state: {} };
+    state.scene = { time: '夜', place: '灵舟', participants: ['user', 'su', '银霜'] };
+
+    const missing = missingGenderCharacters(state);
+    assert.deepEqual(missing.map((character) => character.name), ['银霜']);
+    assert.ok(healthCheck(state).some((issue) => /银霜 性别未知/.test(issue)));
+});
+
+test('提取提示要求角色首次建档时写 gender', () => {
+    const system = buildExtractionPrompt(createEmptyState(), []).system;
+    assert.match(system, /第一次进入 participants/);
+    assert.match(system, /必须同时写 gender/);
+});
+
+test('手动补录字段追加到当前分支最后一条记录，回放不丢', () => {
+    const chat = [{ is_user: false, mes: '开场' }];
+    const history = [{ to: 0, anchor: messageHash(chat[0]), ops: [] }];
+    assert.equal(appendManualField(history, chat, 'user', 'gender', '女'), true);
+    const replayed = replayHistory(history, 0);
+    assert.equal(replayed.characters.user.state.gender.current, '女');
+});
+
+test('认知页手动删除物品/功法后，回放也不会复活', () => {
+    const chat = [{ is_user: false, mes: '你得到青锋剑，并开始修青木诀' }];
+    const history = [{
+        to: 0,
+        anchor: messageHash(chat[0]),
+        ops: [
+            { op: 'add_item', character: 'user', item: { id: 'i_sword', name: '青锋剑' }, evidence: 'msg:0', confidence: 1 },
+            { op: 'add_skill', character: 'user', skill: { id: 'sk_a', name: '青木诀' }, evidence: 'msg:0', confidence: 1 },
+        ],
+    }];
+    assert.equal(appendManualOp(history, chat, { op: 'remove_item', character: 'user', item: 'i_sword' }), true);
+    assert.equal(appendManualOp(history, chat, { op: 'remove_skill', character: 'user', skill: 'sk_a' }), true);
+    assert.equal(history[0].ops.at(-1).evidence, 'manual');
+
+    const replayed = replayHistory(history, 0);
+    const item = replayed.characters.user.items.find((entry) => entry.id === 'i_sword');
+    const skill = replayed.characters.user.skills.find((entry) => entry.id === 'sk_a');
+    assert.ok(item.validTo != null);
+    assert.ok(skill.validTo != null);
+});
+
+test('文本文件不以 BOM 开头', () => {
+    // 扫整个项目，而不只是扩展目录：角色卡源文件也会被编辑器写回 BOM。
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    const exts = new Set(['.js', '.mjs', '.md', '.json', '.html', '.css', '.yaml', '.yml']);
+    const offenders = [];
+    const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (entry.name === '.git' || entry.name === 'node_modules') continue;
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                walk(full);
+            } else if (exts.has(path.extname(entry.name).toLowerCase())) {
+                const bytes = fs.readFileSync(full);
+                if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+                    offenders.push(path.relative(root, full));
+                }
+            }
+        }
+    };
+    walk(root);
+    assert.deepEqual(offenders, [], `以下文件带 BOM：${offenders.join(', ')}`);
 });

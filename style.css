@@ -622,6 +622,20 @@
     transition: width 0.3s ease;
 }
 
+.factledger-progress-delta {
+    margin-left: 6px;
+    font-size: 0.9em;
+    font-variant-numeric: tabular-nums;
+}
+
+.factledger-progress-delta.up {
+    color: #7bc48f;
+}
+
+.factledger-progress-delta.down {
+    color: #d98b8b;
+}
+
 /* 有泄漏待处理时贴在状态栏顶部，不开面板也能看见。 */
 .factledger-statusbar-notice {
     margin: 6px 10px 0;
