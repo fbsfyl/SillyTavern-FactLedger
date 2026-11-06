@@ -23,6 +23,8 @@ import {
     replayHistory,
     healthCheck,
     missingGenderCharacters,
+    duplicateCharacterGroups,
+    missingFieldCharacters,
     appendManualField,
     appendManualOp,
     entityAccess,
@@ -230,6 +232,43 @@ test('预算收紧时优先保留秘密认知', () => {
     assert.match(text, /混沌珠/);
     assert.match(text, /秘密知情/);
     assert.ok(estimateTokens(text) <= 700, `注入仍然过大：${estimateTokens(text)}`);
+});
+
+test('注入始终列出已用姓名，防止新 NPC 重名', () => {
+    const state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main', access: 'protagonist', state: {}, items: [], skills: [], relations: [],
+    };
+    state.characters.ying = { id: 'ying', name: '银霜', aliases: [], state: {}, items: [], skills: [], relations: [] };
+    state.characters.su = {
+        id: 'su', name: '苏清雪', aliases: ['苏师姐'], state: {}, items: [], skills: [], relations: [],
+    };
+    state.scene = { time: '', place: '', participants: ['user'] };
+
+    const text = assembleInjection(state, { tokenBudget: 3000, protagonistId: 'user' });
+    assert.match(text, /【已用姓名】/);
+    assert.match(text, /银霜/);
+    assert.match(text, /苏清雪（苏师姐）/);
+    const registry = text.split('【已用姓名】')[1].split('\n')[0];
+    assert.doesNotMatch(registry, /你/);
+});
+
+test('预算紧张时已用姓名仍保留', () => {
+    const state = createEmptyState();
+    state.characters.user = {
+        id: 'user', name: '你', tier: 'main', access: 'protagonist', state: {}, items: [], skills: [], relations: [],
+    };
+    for (let index = 0; index < 30; index += 1) {
+        state.characters[`npc_${index}`] = {
+            id: `npc_${index}`, name: `角色${index}`, state: {}, items: [], skills: [], relations: [],
+        };
+    }
+    state.characters.ying = { id: 'ying', name: '银霜', state: {}, items: [], skills: [], relations: [] };
+    state.scene = { time: '', place: '', participants: ['user'] };
+
+    const text = assembleInjection(state, { tokenBudget: 250, protagonistId: 'user' });
+    assert.match(text, /【已用姓名】/);
+    assert.match(text, /银霜/);
 });
 
 test('set_scene 支持顶层 time/place/participants', () => {
@@ -441,6 +480,38 @@ test('主角秘密字段不进公开块，只进秘密知情', () => {
     assert.match(publicBlock, /sect：青云宗/);
     assert.doesNotMatch(publicBlock, /realm：筑基一层/);
     assert.match(text, /- 林远 · realm：筑基一层 ｜ 主角级；只有你知道/);
+});
+
+test('主角境界按题材提到角色主块，不再重复进秘密知情', () => {
+    let state = createEmptyState();
+    state.scene = { time: 'ch12', participants: ['user', 'su_wan'] };
+    state = run(state, [
+        {
+            op: 'set',
+            character: 'user',
+            name: '林远',
+            field: 'realm',
+            value: '筑基一层',
+            validFrom: 'ch12',
+            evidence: 'msg:1',
+            confidence: 0.9,
+            access: 'friend',
+        },
+    ]).state;
+    state.characters.user.tier = 'main';
+    state.characters.su_wan = { id: 'su_wan', name: '苏婉', tier: 'major', state: {}, items: [], relations: [] };
+
+    const text = assembleInjection(state, {
+        tokenBudget: 3000,
+        activeCharacterIds: ['user', 'su_wan'],
+        protagonistId: 'user',
+        protagonistName: '林远',
+        levelField: 'realm',
+        fieldOrder: ['realm'],
+    });
+
+    assert.match(text, /realm：筑基一层（知情：你）/);
+    assert.doesNotMatch(text, /· realm：/);
 });
 
 test('物品与关系支持档位', () => {
@@ -971,6 +1042,69 @@ test('buildExtractionPrompt 包含题材与字段提示', () => {
     const { user } = buildExtractionPrompt(state, [], { genreHint: '题材：都市。state 常用字段：rank。' });
     assert.match(user, /题材：都市/);
     assert.match(user, /rank/);
+});
+
+test('不同 id、同名时复用现有角色', () => {
+    const state = tierState();
+    const result = run(state, [
+        { op: 'set_relation', from: 'npc_008', to: 'user', type: '同门', fromName: '顾执事', toName: '你', evidence: 'msg:1', confidence: 0.9 },
+        { op: 'set_relation', from: 'npc_015', to: 'user', type: '引荐入宗', fromName: '顾执事', toName: '你', evidence: 'msg:2', confidence: 0.9 },
+        { op: 'set', character: 'npc_020', name: '顾执事', field: 'gender', value: '男', evidence: 'msg:3', confidence: 0.9 },
+    ]);
+    const gu = Object.values(result.state.characters).filter((character) => character.name === '顾执事');
+    assert.equal(gu.length, 1);
+    assert.equal(gu[0].id, 'npc_008');
+    assert.equal(gu[0].state.gender.current, '男');
+});
+
+test('duplicateCharacterGroups 找重名并保留资料最多的一条', () => {
+    const state = tierState();
+    state.characters.npc_001 = {
+        id: 'npc_001', name: '顾执事', state: { gender: { current: '男', history: [] } }, items: [], skills: [], relations: [],
+    };
+    state.characters.npc_008 = { id: 'npc_008', name: '顾执事', state: {}, items: [], skills: [], relations: [] };
+    state.characters.npc_015 = { id: 'npc_015', name: '顾执事', state: {}, items: [], skills: [], relations: [] };
+
+    const groups = duplicateCharacterGroups(state);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].name, '顾执事');
+    assert.equal(groups[0].ids.length, 3);
+    assert.equal(groups[0].keep, 'npc_001');
+
+    const result = run(state, [
+        { op: 'merge_character', fromId: 'npc_008', toId: 'npc_001', evidence: 'manual', confidence: 1 },
+        { op: 'merge_character', fromId: 'npc_015', toId: 'npc_001', evidence: 'manual', confidence: 1 },
+    ]);
+    assert.equal(Object.values(result.state.characters).filter((character) => character.name === '顾执事').length, 1);
+    assert.equal(result.state.characters.npc_001.state.gender.current, '男');
+    assert.equal(result.state.characters.npc_008, undefined);
+    assert.equal(result.state.characters.npc_015, undefined);
+});
+
+test('merge_character 只允许手动合并', () => {
+    const state = tierState();
+    state.characters.a = { id: 'a', name: '甲', state: {}, items: [], skills: [], relations: [] };
+    state.characters.b = { id: 'b', name: '乙', state: {}, items: [], skills: [], relations: [] };
+    const result = validateOps([
+        { op: 'merge_character', fromId: 'a', toId: 'b', evidence: 'msg:542', confidence: 0.75 },
+        { op: 'merge_character', fromId: 'a', toId: 'b', evidence: 'manual', confidence: 1 },
+    ], state, { confidenceThreshold: 0.7, reviewThreshold: 0.5 });
+    assert.equal(result.rejected.length, 1);
+    assert.match(result.rejected[0].reason, /只允许手动合并/);
+    assert.equal(result.accepted.length, 1);
+});
+
+test('题材有 sect 时提示宗门+层级，其他题材不提示', () => {
+    const xianxia = buildExtractionPrompt(createEmptyState(), [], {
+        genreHint: getGenrePreset('xianxia').hint,
+    }).system;
+    assert.match(xianxia, /sect 记「宗门\+层级」/);
+    assert.match(xianxia, /入册报到、换发令牌/);
+
+    const urban = buildExtractionPrompt(createEmptyState(), [], {
+        genreHint: getGenrePreset('urban').hint,
+    }).system;
+    assert.doesNotMatch(urban, /sect 记「宗门\+层级」/);
 });
 
 test('buildExtractionPrompt 包含台账、对话与输出规则', () => {
@@ -1671,6 +1805,19 @@ test('主角物品过多时截断并给出计数', () => {
     assert.match(text, /另有 5 项/);
 });
 
+test('关系过多时师徒关系优先保留，不被截断', () => {
+    const ops = [{ op: 'set', character: 'user', field: 'gender', value: '未知', evidence: 'msg:0', confidence: 0.9 }];
+    for (let i = 0; i < 12; i += 1) {
+        ops.push({ op: 'set_relation', from: 'user', to: `同门${i}`, type: '同门', evidence: 'msg:0', confidence: 0.9 });
+    }
+    ops.push({ op: 'set_relation', from: 'user', to: '裴元武', type: '师徒', evidence: 'msg:0', confidence: 0.9 });
+    const state = run(createEmptyState(), ops).state;
+    state.scene = { time: '夜', place: '北峰', participants: ['user', '裴元武'] };
+    const text = assembleInjection(state, { activeCharacterIds: ['user', '裴元武'], protagonistId: 'user' });
+    assert.match(text, /裴元武\(师徒\)/);
+    assert.match(text, /另有 \d+ 项/);
+});
+
 test('提取提示词区分玩家内心与当众说出', () => {
     const { system } = buildExtractionPrompt(createEmptyState(), []);
     assert.match(system, /不等于当众说出/);
@@ -2152,6 +2299,40 @@ test('promote_public 作为 op 落账并能被回放', () => {
     assert.equal(entityAccess(replayed.characters.user.items[0]), 'friend');
 });
 
+test('只改档位的 set 不新增同值版本，回放后档位不丢', () => {
+    const state = createEmptyState();
+    run(state, [
+        { op: 'set', character: 'user', field: 'fame', value: '内门体修', evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    const before = state.characters.user.state.fame;
+    assert.equal(entityAccess(before, 'public'), 'public');
+    assert.equal(before.history.length, 1);
+
+    const result = run(state, [
+        {
+            op: 'set', character: 'user', field: 'fame', value: '内门体修',
+            access: 'protagonist', manual: true, evidence: 'manual', confidence: 1,
+        },
+    ]);
+    assert.equal(result.rejected.length, 0);
+    const after = result.state.characters.user.state.fame;
+    assert.equal(entityAccess(after, 'public'), 'protagonist');
+    assert.equal(after.history.length, 1);
+
+    const replayed = replayHistory([{
+        to: 0,
+        characters: [{ id: 'user', name: '你', aliases: [] }],
+        ops: [
+            { op: 'set', character: 'user', field: 'fame', value: '内门体修', evidence: 'msg:1', confidence: 0.9 },
+            {
+                op: 'set', character: 'user', field: 'fame', value: '内门体修',
+                access: 'protagonist', manual: true, evidence: 'manual', confidence: 1,
+            },
+        ],
+    }]);
+    assert.equal(entityAccess(replayed.characters.user.state.fame, 'public'), 'protagonist');
+});
+
 test('replayHistory 按场景参与者重建角色档案且不改写日志', () => {
     const history = [{
         to: 0,
@@ -2228,6 +2409,30 @@ test('稳定 ID：姓名揭示只改名，不新建档案', () => {
     assert.equal(findCharacter(result.state, '月白长裙女修').id, id);
 });
 
+test('姓名揭示：正文简称能对上带门派前缀的描述名', () => {
+    const state = run(createEmptyState(), [
+        { op: 'set', character: '咒堂银袖女修', field: 'gender', value: '女', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: '咒堂银袖女修', field: 'realm', value: '金丹初期', evidence: 'msg:0', confidence: 0.9 },
+    ]).state;
+    const id = findCharacter(state, '咒堂银袖女修').id;
+    const result = run(state, [
+        { op: 'rename_character', from: '银袖女修', to: '沈离', evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    const person = findCharacter(result.state, '沈离');
+    assert.equal(person.id, id);
+    assert.equal(person.state.realm.current, '金丹初期');
+    assert.ok(person.aliases.includes('咒堂银袖女修'));
+    assert.equal(Object.keys(result.state.characters).length, 1);
+});
+
+test('姓名揭示找不到原档案时拒绝，不新建空白角色', () => {
+    const result = run(createEmptyState(), [
+        { op: 'rename_character', from: '沈离', to: '沈离', evidence: 'msg:1', confidence: 0.9 },
+    ]);
+    assert.equal(Object.keys(result.state.characters).length, 0);
+    assert.ok(result.rejected.some((item) => /rename_character/.test(item.reason || '')));
+});
+
 test('稳定 ID：不同执事是两个档案，档位互不影响', () => {
     const result = run(createEmptyState(), [
         { op: 'set', character: '白玉广场执事甲', field: 'gender', value: '男', evidence: 'msg:0', confidence: 0.9 },
@@ -2252,7 +2457,7 @@ test('稳定 ID：merge_character 迁移数据与引用', () => {
     const from = findCharacter(state, '月白长裙女修');
     const to = findCharacter(state, '苏绾');
     const result = run(state, [
-        { op: 'merge_character', from: '月白长裙女修', to: '苏绾', evidence: 'msg:3', confidence: 0.9 },
+        { op: 'merge_character', from: '月白长裙女修', to: '苏绾', evidence: 'manual', confidence: 1 },
     ]);
     assert.equal(findCharacter(result.state, '月白长裙女修').id, to.id);
     assert.equal(findCharacter(result.state, '苏绾').items.length, 1);
@@ -2548,6 +2753,45 @@ test('玩家身份字段首次可写，之后不可改写', () => {
     ]);
     assert.equal(result.state.characters.user.state.spiritRoot.current, '杂灵根');
     assert.ok(result.rejected.some((item) => /不能改写玩家的 spiritRoot/.test(item.reason)));
+});
+
+test('手动编辑允许修正玩家身份字段', () => {
+    const result = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'spiritRoot', value: '杂灵根', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set', character: 'user', field: 'spiritRoot', value: '天灵根', manual: true, evidence: 'manual', confidence: 1 },
+    ]);
+    assert.equal(result.state.characters.user.state.spiritRoot.current, '天灵根');
+    assert.equal(result.rejected.length, 0);
+});
+
+test('认知页编辑各类型词条的手动 op 生效', () => {
+    const state = run(createEmptyState(), [
+        { op: 'set', character: 'user', field: 'fame', value: '外门新秀', evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_item', character: 'user', item: { id: 'i_wine', name: '北风醉', quantity: 2, kind: 'consumable', access: 'protagonist' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'add_skill', character: 'user', skill: { id: 'sk_star', name: '碎星决', level: '入门', access: 'protagonist' }, evidence: 'msg:0', confidence: 0.9 },
+        { op: 'set_relation', from: 'user', to: '苏婉', type: '同门', evidence: 'msg:0', confidence: 0.9 },
+    ]).state;
+
+    const result = run(state, [
+        { op: 'set', character: 'user', field: 'fame', value: '内门新秀', manual: true, evidence: 'manual', confidence: 1 },
+        { op: 'add_item', character: 'user', item: { id: 'i_wine', name: '北风醉', kind: 'consumable', access: 'protagonist' }, evidence: 'manual', confidence: 1 },
+        { op: 'set_item_quantity', character: 'user', item: 'i_wine', quantity: 3, evidence: 'manual', confidence: 1 },
+        { op: 'add_skill', character: 'user', skill: { id: 'sk_star', name: '碎星诀', level: '小成', access: 'protagonist' }, evidence: 'manual', confidence: 1 },
+        { op: 'set_relation', from: 'user', to: '苏婉', type: '道侣', evidence: 'manual', confidence: 1 },
+    ]);
+
+    assert.equal(result.rejected.length, 0);
+    const user = result.state.characters.user;
+    assert.equal(user.state.fame.current, '内门新秀');
+    const wine = user.items.find((item) => item.id === 'i_wine' && item.validTo == null);
+    assert.equal(wine.name, '北风醉');
+    assert.equal(wine.quantity, 3);
+    const skill = user.skills.find((item) => item.id === 'sk_star' && item.validTo == null);
+    assert.equal(skill.name, '碎星诀');
+    assert.equal(skill.level, '小成');
+    const live = user.relations.filter((relation) => relation.validTo == null);
+    assert.equal(live.length, 1);
+    assert.equal(live[0].type, '道侣');
 });
 
 test('中文身份字段也受写保护', () => {
@@ -2965,6 +3209,13 @@ test('提取提示只在题材放行时提到 NPC 宗门', () => {
     assert.doesNotMatch(withoutSect, /性别、宗门/);
 });
 
+test('提取提示定义名望只在公开传开后更新', () => {
+    const { system } = buildExtractionPrompt(createEmptyState(), []);
+    assert.match(system, /fame（名望\/名声\/声望）/);
+    assert.match(system, /无人目击的私下事件不写/);
+    assert.match(system, /覆盖旧值，不拼接旧句/);
+});
+
 test('每个题材都声明等级字段', () => {
     for (const { id } of listGenrePresets()) {
         assert.equal(typeof getGenrePreset(id).levelField, 'string', id);
@@ -3273,6 +3524,23 @@ test('认知页手动删除物品/功法后，回放也不会复活', () => {
     const skill = replayed.characters.user.skills.find((entry) => entry.id === 'sk_a');
     assert.ok(item.validTo != null);
     assert.ok(skill.validTo != null);
+});
+
+test('在场缺宗门的 NPC 被列出，已有宗门的不算', () => {
+    const state = createEmptyState();
+    state.characters.user = { id: 'user', name: '你', tier: 'main', state: {} };
+    state.characters.yin = {
+        id: 'yin', name: '银霜', tier: 'major',
+        state: { gender: { current: '女', history: [] }, sect: { current: '青云剑宗内门', history: [] } },
+    };
+    state.characters.guo = {
+        id: 'guo', name: '郭林', tier: 'npc',
+        state: { gender: { current: '男', history: [] } },
+    };
+    state.scene = { time: '', place: '', participants: ['user', 'yin', 'guo'] };
+
+    assert.deepEqual(missingFieldCharacters(state, 'sect').map((character) => character.name), ['郭林']);
+    assert.deepEqual(missingFieldCharacters(state, 'gender').map((character) => character.name), []);
 });
 
 test('文本文件不以 BOM 开头', () => {

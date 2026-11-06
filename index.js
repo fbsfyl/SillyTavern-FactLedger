@@ -7,6 +7,8 @@ import {
     assembleInjection,
     healthCheck,
     missingGenderCharacters,
+    duplicateCharacterGroups,
+    missingFieldCharacters,
     appendManualField,
     appendManualOp,
     estimateTokens,
@@ -47,7 +49,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.16.8';
+const VERSION = '0.16.36';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Matches SillyTavern's extension_prompt_types / extension_prompt_roles.
 // IN_PROMPT merges into the main system prompt (before world info and chat).
@@ -172,7 +174,7 @@ function warnSendLocked() {
 
 /**
  * 酒馆没有可取消的 MESSAGE_SENDING 事件，只能在 DOM 事件到达酒馆处理器之前拦住。
- * capture 阶段拦截发送按钮、重新生成、继续；Shift+Enter 放行，保留换行。
+ * capture 阶段只拦发送下一条消息；重新生成、swipe、继续属于当前回合的新尝试，放行。
  */
 function installSendGuards() {
     if (sendGuardsInstalled) return;
@@ -189,7 +191,7 @@ function installSendGuards() {
     window.addEventListener('click', (event) => {
         if (!sendLocked) return;
         const target = event.target instanceof Element
-            ? event.target.closest('#send_but, #option_regenerate, #option_continue, #mes_continue')
+            ? event.target.closest('#send_but')
             : null;
         if (!target) return;
         event.preventDefault();
@@ -547,6 +549,13 @@ async function resettleMessage(index, options = {}) {
     const auto = Boolean(options.auto);
     if (settleRunning) {
         if (!auto) setStatus('结算正在进行中，请稍候。');
+        // 结算中改过正文：本轮结果会作废，结束后按新正文补一次整体结算。
+        else settleQueued = true;
+        return null;
+    }
+    // 后台标签下 Chrome 会挂起这类请求，两次尝试都只会白等超时；留到切回可见时再算。
+    if (auto && typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        pendingResettleIndex = Number(index);
         return null;
     }
     const ctx = getContext();
@@ -565,13 +574,16 @@ async function resettleMessage(index, options = {}) {
     }
 
     const chatId = currentChatId();
+    const startedAt = Date.now();
+    const extractionMeta = {};
+    let settleError = '';
+    let settlePromptChars = 0;
     settleRunning = true;
     settlePending = true;
+    armSettleWatchdog('resettle', startedAt);
     lockSending();
     renderStatusBar();
     setStatus(`正在重算 #${target}…`);
-    const startedAt = Date.now();
-    const extractionMeta = {};
     try {
         // 先按当前正文回放一次，确保历史与分支是最新的。
         restoreLedgerFromHistory('resettle-start');
@@ -615,6 +627,7 @@ async function resettleMessage(index, options = {}) {
             skillLabel: preset.skillLabel,
             npcExtraFieldLabels: [preset.fieldLabels?.sect].filter(Boolean),
         });
+        settlePromptChars = system.length + user.length;
         const deadline = Date.now() + EXTRACTION_TIMEOUT_MS;
         let parsed;
         let lastRaw = '';
@@ -627,6 +640,7 @@ async function resettleMessage(index, options = {}) {
                 lastRaw = await callExtractionModel(system, user, settings.maxTokens, { deadline, meta: extractionMeta });
                 parsed = parseExtractionResponse(lastRaw);
             } catch (retryErr) {
+                settleError = errorDetail(retryErr);
                 showExtractionFailure(classifyExtractionFailure(lastRaw, retryErr, extractionMeta));
                 return null;
             }
@@ -776,20 +790,65 @@ async function resettleMessage(index, options = {}) {
         }, state);
         return result;
     } catch (err) {
+        settleError = errorDetail(err);
         showExtractionFailure(classifyExtractionFailure('', err, extractionMeta));
         error('resettle failed', err);
         return null;
     } finally {
+        clearSettleWatchdog();
         settleRunning = false;
         settlePending = false;
+        if (settleError && extractionMeta.attempts && extractionMeta.abortSettledMs == null) {
+            await new Promise((resolve) => setTimeout(resolve, 60));
+        }
+        recordSettleTrace('resettle', startedAt, settlePromptChars, extractionMeta, settleError);
         renderStatusBar();
         unlockSending('resettle-done');
+        // 重算期间被挡下的自动结算不能丢，结束后补跑。
+        if (settleQueued) {
+            settleQueued = false;
+            setTimeout(() => {
+                settleLedger().catch((err) => error('queued settle failed', err));
+            }, 0);
+        }
     }
 }
 
 let resettleTimer = null;
 let resettleIndex = -1;
 let resettleChatId = '';
+// 生成期间不发起提取：读到的是旧 swipe 或半截正文，会造出正文里没有的角色。
+let generationActive = false;
+let pendingResettleIndex = -1;
+// 结算看门狗：任何一轮超过这个时间仍未结束，强制复位，避免把后续结算全部堵死。
+const SETTLE_WATCHDOG_MS = 120000;
+let settleWatchdog = null;
+
+function armSettleWatchdog(mode, startedAt) {
+    clearSettleWatchdog();
+    settleWatchdog = setTimeout(() => {
+        settleWatchdog = null;
+        error('settle watchdog fired', mode);
+        settleRunning = false;
+        settlePending = false;
+        unlockSending('watchdog');
+        recordSettleTrace(`${mode}-watchdog`, startedAt, 0, {}, '结算超过 120 秒未结束，已强制复位');
+        renderStatusBar();
+        if (settleQueued) {
+            settleQueued = false;
+            setTimeout(() => {
+                settleLedger().catch((err) => error('queued settle failed', err));
+            }, 1000);
+        }
+    }, SETTLE_WATCHDOG_MS);
+}
+
+function clearSettleWatchdog() {
+    if (settleWatchdog) {
+        clearTimeout(settleWatchdog);
+        settleWatchdog = null;
+    }
+}
 
 /** 编辑/切换正文后，若该条记录已失效就安排一次自动重算。 */
 function scheduleResettle(index) {
@@ -810,6 +869,11 @@ function scheduleResettle(index) {
         const pendingChat = resettleChatId;
         resettleIndex = -1;
         if (!pendingChat || pendingChat !== currentChatId()) return;
+        // 生成进行中不提取，等 GENERATION_ENDED 再算。
+        if (generationActive) {
+            pendingResettleIndex = pending;
+            return;
+        }
         resettleMessage(pending, { auto: true });
     }, 1200);
     return true;
@@ -834,6 +898,7 @@ function buildInjectionText() {
         showOthers: settings.showOthers,
         skillLabel: preset.skillLabel,
         fieldLabels: preset.fieldLabels,
+        levelField: preset.levelField,
         recentText,
         fieldOrder: preset.fieldOrder,
         protagonistId: getProtagonist()?.id || '',
@@ -888,15 +953,28 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // A provider that never answers would leave settleRunning stuck forever,
 // silently disabling every later auto settle. Always give up eventually.
-// 提取要读台账 + 20 条消息再输出 JSON；思考型模型还要先推理，20 秒不够。
-const EXTRACTION_TIMEOUT_MS = 60000;
+// 提取要读台账 + 20 条消息再输出 JSON；思考型模型还要先推理，超时给太短会误判失败。
+const EXTRACTION_TIMEOUT_MS = 30000;
+// 自动结算稍作异步缓冲即可，不要人为拉长等待。
+const AUTO_SETTLE_DELAY_MS = 1000;
+// 首次请求的超时上限：给重试留出剩余预算。追踪数据显示同一份请求第一次无响应、
+// 第二次 3~4 秒就能返回，所以首次先给 20 秒，超时后立即重试。
+const FIRST_ATTEMPT_TIMEOUT_MS = 20000;
 // 思考 token 和 JSON 正文共用 max_tokens；低于这个值容易只剩思考、正文为空。
 const THINKING_MIN_TOKENS = 8192;
 
-function withTimeout(promise, ms, label) {
+function withTimeout(promise, ms, label, onTimeout) {
     let timer;
     const timeout = new Promise((resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label}超时（${Math.round(ms / 1000)} 秒），已放弃本次结算`)), ms);
+        timer = setTimeout(() => {
+            // 超时同时取消底层请求，避免僵尸请求继续占着连接。
+            try {
+                onTimeout?.();
+            } catch {
+                // 取消失败不影响超时判定。
+            }
+            reject(new Error(`${label}超时（${Math.round(ms / 1000)} 秒），已放弃本次结算`));
+        }, ms);
     });
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -943,7 +1021,7 @@ async function callExtractionModel(system, user, maxTokens, options = {}) {
     }
 
     const retries = Number(options.retries ?? 2);
-    const delayMs = Number(options.delayMs ?? 8000);
+    const delayMs = Number(options.delayMs ?? 3000);
     const messages = [
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -980,6 +1058,11 @@ function thinkingPayload(profileId) {
 }
 
 async function requestExtraction(service, profileId, messages, maxTokens, retries, delayMs, deadline = Date.now() + EXTRACTION_TIMEOUT_MS, meta = null) {
+    if (meta) {
+        meta.profileId = String(profileId || '').slice(0, 8);
+        meta.visibility = typeof document !== 'undefined' ? document.visibilityState : '';
+        meta.online = typeof navigator !== 'undefined' ? navigator.onLine : null;
+    }
     const requestOptions = {
         extractData: true,
         includePreset: getSettings().extractionIncludePreset === true,
@@ -993,6 +1076,8 @@ async function requestExtraction(service, profileId, messages, maxTokens, retrie
     let lastDetail = '';
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
+        const attemptStartedAt = Date.now();
+        if (meta) meta.attempts = Number(meta.attempts || 0) + 1;
         try {
             const left = remaining();
             if (left <= 0) {
@@ -1000,13 +1085,33 @@ async function requestExtraction(service, profileId, messages, maxTokens, retrie
             }
             let response;
             try {
+                // 首次只给 20 秒：万一无响应，剩下的预算还能再发一次。
+                const attemptBudget = attempt === 0 ? Math.min(left, FIRST_ATTEMPT_TIMEOUT_MS) : left;
+                const controller = new AbortController();
+                let abortedAt = 0;
+                const request = service.sendRequest(profileId, messages, effectiveMaxTokens, {
+                    ...requestOptions,
+                    signal: controller.signal,
+                }, {
+                    ...thinking,
+                    response_format: { type: 'json_object' },
+                });
+                // 诊断：记录 abort 之后底层请求隔了多久才结束。
+                // 几毫秒内结束（AbortError）说明它一直挂在网络层；毫无反应说明卡在酒馆内部。
+                request.catch((err) => {
+                    if (meta && controller.signal.aborted) {
+                        meta.abortSettledMs = abortedAt ? Date.now() - abortedAt : -1;
+                        meta.abortError = String(err?.name || err?.message || err).slice(0, 60);
+                    }
+                });
                 response = await withTimeout(
-                    service.sendRequest(profileId, messages, effectiveMaxTokens, requestOptions, {
-                        ...thinking,
-                        response_format: { type: 'json_object' },
-                    }),
-                    left,
+                    request,
+                    attemptBudget,
                     '提取请求',
+                    () => {
+                        abortedAt = Date.now();
+                        controller.abort();
+                    },
                 );
             } catch (err) {
                 const detail = errorDetail(err);
@@ -1039,46 +1144,143 @@ async function requestExtraction(service, profileId, messages, maxTokens, retrie
         } catch (err) {
             lastDetail = errorDetail(err);
             const isCapacity = /capacity|at capacity|rate limit|too many requests|429/i.test(lastDetail);
+            const isTimeout = /超时|timeout|timed out/i.test(lastDetail);
+            // 首次请求无响应时立即重试：同一份请求第二次通常几秒就能返回。
+            if (isTimeout && attempt === 0 && attempt < retries && remaining() > 2000) {
+                setStatus('提取请求未响应，正在重试…');
+                continue;
+            }
             if (isCapacity && attempt < retries && remaining() > delayMs) {
                 setStatus(`模型容量不足，${Math.round(delayMs / 1000)} 秒后重试（${attempt + 1}/${retries}）…`);
                 await sleep(delayMs);
                 continue;
             }
             throw new Error(lastDetail || 'API request failed');
+        } finally {
+            if (meta) {
+                const attemptMs = Array.isArray(meta.attemptMs) ? meta.attemptMs : [];
+                attemptMs.push(Date.now() - attemptStartedAt);
+                meta.attemptMs = attemptMs;
+            }
         }
     }
 
     throw new Error(lastDetail || 'API request failed');
 }
 
+/** 最近一次生成请求的 resource timing：requestStart 有值说明请求已发出。 */
+function lastGenerateTiming() {
+    try {
+        const entries = performance.getEntriesByType('resource')
+            .filter((entry) => String(entry.name).includes('/api/backends/chat-completions/generate'));
+        const last = entries[entries.length - 1];
+        if (!last) return null;
+        return {
+            requestStart: Math.round(Number(last.requestStart) || 0),
+            responseStart: Math.round(Number(last.responseStart) || 0),
+            duration: Math.round(Number(last.duration) || 0),
+            transferSize: Number(last.transferSize) || 0,
+        };
+    } catch {
+        return null;
+    }
+}
+
+/** 记录一轮结算的耗时与失败阶段，自动、手动、重算各自一条。 */
+function recordSettleTrace(mode, startedAt, promptChars, extractionMeta, errorText, failedPrompt = '') {
+    try {
+        const traceState = getState();
+        const trace = {
+            at: new Date(startedAt).toISOString(),
+            mode,
+            promptChars: Number(promptChars) || 0,
+            elapsedMs: Date.now() - startedAt,
+            attempts: Number(extractionMeta?.attempts || 0),
+            attemptMs: Array.isArray(extractionMeta?.attemptMs) ? extractionMeta.attemptMs : [],
+            profileId: extractionMeta?.profileId || '',
+            visibility: extractionMeta?.visibility || '',
+            online: extractionMeta?.online,
+            abortSettledMs: extractionMeta?.abortSettledMs ?? null,
+            abortError: extractionMeta?.abortError || '',
+            networkTiming: lastGenerateTiming(),
+            error: String(errorText || '').slice(0, 200),
+            // 失败时留存完整 prompt，可在本地用同一份内容复现，不必再靠猜。
+            prompt: errorText ? String(failedPrompt || '').slice(0, 20000) : '',
+        };
+        const traces = Array.isArray(traceState.meta.settleTraces) ? traceState.meta.settleTraces : [];
+        traces.push(trace);
+        traceState.meta.settleTraces = traces.slice(-8);
+        traceState.meta.lastSettleTrace = trace;
+        saveState();
+    } catch (err) {
+        error('settle trace failed', err);
+    }
+}
+
 async function settleLedger(options = {}) {
     const manual = Boolean(options.manual);
+    // 自动结算被跳过时留下一行原因，避免“没跑”和“跑了但没记录”混在一起。
+    const noteSkip = (reason) => {
+        if (manual) return;
+        try {
+            const skipState = getState();
+            skipState.meta.lastSettleSkip = {
+                at: new Date().toISOString(),
+                sinceSettle: Number(skipState.meta.messagesSinceSettle) || 0,
+                reason,
+            };
+            saveState();
+        } catch {
+            // 记录失败不影响结算流程。
+        }
+    };
     if (settleRunning) {
         if (manual) setStatus('结算正在进行中，请稍候。');
+        // 自动调用被重算/结算占着时不能直接丢，结束后必须补跑。
+        else settleQueued = true;
+        noteSkip('running');
         return null;
     }
     const ctx = getContext();
     const settings = getSettings();
     if (!settings.enabled) {
         if (manual) setStatus('台账已禁用。');
+        noteSkip('disabled');
         return null;
     }
     if (!Array.isArray(ctx.chat) || ctx.chat.length === 0) {
         if (manual) setStatus('当前没有聊天消息可结算。');
+        noteSkip('no-chat');
         return null;
     }
     if (!settings.useCurrentConnection && !getProfileId() && !settings.fallbackProfileId) {
         if (manual) setStatus('未选择提取连接配置，请先到设置里选择，或勾选“跟随当前连接”。');
+        noteSkip('no-profile');
+        return null;
+    }
+    if (getState().meta.messagesSinceSettle < (Number(settings.autoInterval) || 1) && !manual) {
+        // 理论上入口已判断过，这里兜一层，防止补跑时条件已变。
+        noteSkip('interval');
+        return null;
+    }
+    if (generationActive && !manual) {
+        // 叙事还在生成：此刻正文不完整，提取会造出正文里没有的角色。
+        settleQueued = true;
+        noteSkip('generating');
         return null;
     }
 
     settleRunning = true;
     settlePending = true;
+    const settleStartedAt = Date.now();
+    const extractionMeta = {};
+    let settlePromptChars = 0;
+    let settlePromptText = '';
+    let settleError = '';
+    armSettleWatchdog(manual ? 'manual' : 'auto', settleStartedAt);
     lockSending();
     renderStatusBar();
     setStatus('正在结算本幕…');
-    const settleStartedAt = Date.now();
-    const extractionMeta = {};
     try {
         const state = getState();
         if (detectAnchorMutation(ctx.chat, state.meta.lastProcessedMessage, state.meta.lastProcessedHash)) {
@@ -1099,6 +1301,12 @@ async function settleLedger(options = {}) {
             if (manual) toastInfo(message);
             return null;
         }
+        // 提取期间正文可能被重新生成或 swipe：冻结目标消息的锚点与前缀，落账时挂回它原本那一版。
+        const settleTargetIndex = Number(to);
+        const settleTargetHash = ctx.chat[settleTargetIndex]
+            ? messageHash(ctx.chat[settleTargetIndex])
+            : '';
+        const settlePrefixHashes = computePrefixHashes(ctx.chat);
         const { system, user } = buildExtractionPrompt(state, messages, {
             maxMessages: messages.length,
             newFrom,
@@ -1106,8 +1314,10 @@ async function settleLedger(options = {}) {
             skillLabel: getGenrePreset(settings.genrePreset).skillLabel,
             npcExtraFieldLabels: [getGenrePreset(settings.genrePreset).fieldLabels?.sect].filter(Boolean),
         });
-        // 本轮结算最多 60 秒：首次请求、重试和解析失败重试共用这个截止时间。
+        // 本轮结算最多 30 秒：首次请求、重试和解析失败重试共用这个截止时间。
         const extractionDeadline = Date.now() + EXTRACTION_TIMEOUT_MS;
+        settlePromptChars = system.length + user.length;
+        settlePromptText = `${system}\n\n${user}`;
         const raw = await callExtractionModel(system, user, settings.maxTokens, {
             deadline: extractionDeadline,
             meta: extractionMeta,
@@ -1127,6 +1337,7 @@ async function settleLedger(options = {}) {
                 lastRaw = retryRaw;
                 parsed = parseExtractionResponse(retryRaw);
             } catch (retryErr) {
+                settleError = errorDetail(retryErr);
                 showExtractionFailure(classifyExtractionFailure(lastRaw, retryErr, extractionMeta));
                 return null;
             }
@@ -1203,9 +1414,13 @@ async function settleLedger(options = {}) {
         // 开局（或旧数据）还没有内部日期时，从第 1 天起算。
         if (nextState.scene.day === null) nextState.scene.day = 1;
         const lastIndex = Number.isFinite(to) ? to : ctx.chat.length - 1;
-        const prefixHashes = computePrefixHashes(ctx.chat);
+        // 结算期间切到了别的 swipe：结果仍属于原来那一版，用冻结的锚点写回。
+        const staleSwipe = Boolean(settleTargetHash)
+            && messageHash(ctx.chat[lastIndex]) !== settleTargetHash;
         // 同一序号的不同 swipe 各留一条记录；只有正文完全相同的重复结算才替换。
-        const currentHash = prefixHashes[lastIndex] || '';
+        const currentHash = staleSwipe
+            ? (settlePrefixHashes[lastIndex] || '')
+            : (computePrefixHashes(ctx.chat)[lastIndex] || '');
         const history = (nextState.meta.history || []).filter((record) => (
             Number(record?.to) !== lastIndex || record.prefixHash !== currentHash
         ));
@@ -1243,15 +1458,29 @@ async function settleLedger(options = {}) {
                 name: character.name,
                 aliases: character.aliases || [],
             }));
-        history.push({
+        const record = {
             to: lastIndex,
-            anchor: messageHash(ctx.chat[lastIndex]),
-            prefixHash: prefixHashes[lastIndex] || '',
+            anchor: staleSwipe ? settleTargetHash : messageHash(ctx.chat[lastIndex]),
+            prefixHash: currentHash,
             ops: [...result.applied, ...sceneOps, ...(promotionOp ? [promotionOp] : [])],
             characters: newCharacters,
             scene: { ...nextState.scene },
             progress: { before: progressBefore, after: progressOf(nextState) },
-        });
+        };
+        if (staleSwipe) {
+            // 只补旧版的日志，不动当前分支的状态和游标；切回旧 swipe 时按锚点命中。
+            const liveState = getState();
+            const liveHistory = (liveState.meta?.history || []).filter((entry) => (
+                Number(entry?.to) !== lastIndex || entry.anchor !== settleTargetHash
+            ));
+            liveHistory.push(record);
+            liveState.meta.history = liveHistory;
+            saveState();
+            renderPanel();
+            setStatus('本回合已重新生成，旧版结果已记在原来那一版上；切回旧版可以看到。');
+            return null;
+        }
+        history.push(record);
         nextState.meta.history = history;
         // 以版本日志为准重建一次：上次结算留下的状态漂移（例如旧记录里的境界被
         // 这次批量提取漏掉）会在这里纠正，避免状态栏和日志各说各的。
@@ -1316,12 +1545,19 @@ async function settleLedger(options = {}) {
         log('settle result', result);
         return result;
     } catch (err) {
+        settleError = errorDetail(err);
         showExtractionFailure(classifyExtractionFailure('', err, extractionMeta));
         error('settle failed', err);
         return null;
     } finally {
+        clearSettleWatchdog();
         settleRunning = false;
         settlePending = false;
+        // 等一拍，让 abort 的落地结果写进 meta 再落 trace。
+        if (settleError && extractionMeta.attempts && extractionMeta.abortSettledMs == null) {
+            await new Promise((resolve) => setTimeout(resolve, 60));
+        }
+        recordSettleTrace(manual ? 'manual' : 'auto', settleStartedAt, settlePromptChars, extractionMeta, settleError, settlePromptText);
         renderStatusBar();
         unlockSending('settle-done');
         // 结算期间到达的回复：本轮结束后立刻补一次，避免要等到再下一条消息。
@@ -1941,6 +2177,7 @@ function renderKnowledge(body) {
                 <div class="factledger-card-text">${escapeHtml(card.text || '')}</div>
                 <div class="factledger-card-foot">
                     <span class="factledger-muted">${escapeHtml(card.known)}</span>
+                    <button class="menu_button factledger-edit-entry" data-index="${index}">编辑</button>
                     <button class="menu_button factledger-edit-known" data-index="${index}">编辑档位</button>
                     ${deletable ? `<button class="menu_button factledger-delete-known" data-index="${index}">删除</button>` : ''}
                 </div>
@@ -1949,6 +2186,12 @@ function renderKnowledge(body) {
         })
         .join('');
 
+    body.querySelectorAll('.factledger-edit-entry').forEach((button) => {
+        button.addEventListener('click', () => {
+            const entry = knowledgeEntries[Number(button.dataset.index)];
+            if (entry) openKnowledgeEditor(entry);
+        });
+    });
     body.querySelectorAll('.factledger-edit-known').forEach((button) => {
         button.addEventListener('click', () => {
             const entry = knowledgeEntries[Number(button.dataset.index)];
@@ -2011,7 +2254,37 @@ function deleteKnowledgeEntity(card) {
         : `已从当前台账删除${label}「${name}」，但没有可写入的日志记录，重算后可能恢复。`);
 }
 
+/** 认知页改档位：按条目类型构造只改 access 的手动 op。 */
+function accessOp(ref, entity, access) {
+    switch (ref?.kind) {
+        case 'field':
+            return { op: 'set', character: ref.charId, field: ref.field, value: entity.current ?? entity, access, manual: true };
+        case 'item':
+            return { op: 'add_item', character: ref.charId, item: { id: entity.id, name: entity.name, access }, access, manual: true };
+        case 'relation':
+            return {
+                op: 'set_relation',
+                from: ref.charId,
+                to: entity.target || entity.targetName,
+                type: entity.type || '',
+                access,
+                manual: true,
+            };
+        case 'skill':
+            return {
+                op: 'add_skill',
+                character: ref.charId,
+                skill: { id: entity.id, name: entity.name, level: entity.level || '', access },
+                access,
+                manual: true,
+            };
+        default:
+            return null;
+    }
+}
+
 function openKnownByEditor(card) {
+    const state = getState();
     const entity = resolveEntity(card.ref);
     if (!entity) {
         setStatus('找不到要编辑的对象，可能已被删除。');
@@ -2052,13 +2325,188 @@ function openKnownByEditor(card) {
     modal.querySelector('.factledger-modal-close')?.addEventListener('click', close);
     modal.querySelector('#factledger_known_cancel')?.addEventListener('click', close);
     modal.querySelector('#factledger_known_save')?.addEventListener('click', () => {
-        const selected = document.getElementById('factledger_known_access')?.value || current;
-        entity.access = normalizeAccess(selected, current);
+        const selected = normalizeAccess(document.getElementById('factledger_known_access')?.value || current, current);
+        const op = accessOp(card.ref, entity, selected);
+        if (!op) {
+            setStatus('这条记录不支持改档位。');
+            return;
+        }
+        // 档位也要写进日志：只改内存的话，删回合或刷新回放就会退回默认档。
+        const prepared = { evidence: 'manual', confidence: 1, ...op };
+        const preset = getGenrePreset(getSettings().genrePreset);
+        let result;
+        try {
+            result = applyOps(state, [prepared], {
+                confidenceThreshold: 0,
+                reviewThreshold: 0,
+                npcFields: [preset.levelField].filter(Boolean),
+            });
+        } catch (err) {
+            setStatus(`保存失败：${err.message}`);
+            return;
+        }
+        if (result.rejected?.length) {
+            setStatus(`保存失败：${result.rejected[0].reason || '未知原因'}`);
+            return;
+        }
+        appendManualOp(state.meta?.history || [], getContext().chat || [], prepared);
         saveState();
         refreshInjection();
         close();
         renderPanel();
-        setStatus(`已把「${card.subject || card.type}」改为${ACCESS_LABELS[entity.access]}。`);
+        setStatus(`已把「${card.subject || card.type}」改为${ACCESS_LABELS[selected]}。`);
+    });
+}
+
+/** 认知页手动编辑：字段改值，物品改名称/数量，关系改称谓，功法改名称/层次。 */
+function openKnowledgeEditor(card) {
+    const state = getState();
+    const entity = resolveEntity(card.ref);
+    if (!entity) {
+        setStatus('找不到要编辑的对象，可能已被删除。');
+        return;
+    }
+    const preset = getGenrePreset(getSettings().genrePreset);
+    const kind = card.ref.kind;
+    const row = (id, label, value, { type = 'text', multiline = false } = {}) => `
+        <div class="factledger-row">
+            <label for="factledger_edit_${id}">${escapeHtml(label)}</label>
+            ${multiline
+                ? `<textarea id="factledger_edit_${id}" rows="3">${escapeHtml(String(value ?? ''))}</textarea>`
+                : `<input id="factledger_edit_${id}" class="text_pole" type="${type}" value="${escapeHtml(String(value ?? ''))}" />`}
+        </div>
+    `;
+    let rows = '';
+    if (kind === 'field') {
+        rows = row('value', '值', entity.current ?? entity, { multiline: true });
+    } else if (kind === 'item') {
+        rows = row('name', '名称', entity.name)
+            + row('quantity', '数量', entity.quantity ?? 1, { type: 'number' });
+    } else if (kind === 'relation') {
+        rows = row('type', '关系', entity.type);
+    } else if (kind === 'skill') {
+        rows = row('name', '名称', entity.name)
+            + row('level', '层次', entity.level);
+    } else {
+        setStatus('这条记录不支持编辑。');
+        return;
+    }
+
+    document.getElementById('factledger_edit_modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'factledger_edit_modal';
+    modal.className = 'factledger-modal';
+    modal.innerHTML = `
+        <div class="factledger-modal-content">
+            <div class="factledger-modal-head">
+                <strong>编辑词条</strong>
+                <span class="factledger-modal-close" title="关闭">✕</span>
+            </div>
+            <div class="factledger-muted">对象：${escapeHtml(card.subject || card.type)}</div>
+            ${rows}
+            <div class="factledger-hint">只改台账记录，不改正文；回放与刷新后仍然生效。</div>
+            <div class="factledger-hint" id="factledger_edit_error"></div>
+            <div class="factledger-actions">
+                <button class="menu_button" id="factledger_edit_save">保存</button>
+                <button class="menu_button" id="factledger_edit_cancel">取消</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    const close = () => modal.remove();
+    const valueOf = (id) => String(document.getElementById(`factledger_edit_${id}`)?.value ?? '').trim();
+    const showError = (message) => {
+        const el = modal.querySelector('#factledger_edit_error');
+        if (el) el.textContent = message;
+        setStatus(message);
+    };
+    const finish = (ops) => {
+        // 手动编辑也要带证据：applyOps 会先校验，缺 evidence 会被整条拒绝。
+        const prepared = ops.map((op) => ({ evidence: 'manual', confidence: 1, ...op }));
+        let result;
+        try {
+            result = applyOps(state, prepared, {
+                confidenceThreshold: 0,
+                reviewThreshold: 0,
+                npcFields: [preset.levelField].filter(Boolean),
+            });
+        } catch (err) {
+            showError(`保存失败：${err.message}`);
+            return;
+        }
+        if (result.rejected?.length) {
+            showError(`保存失败：${result.rejected[0].reason || '未知原因'}`);
+            return;
+        }
+        for (const op of prepared) {
+            appendManualOp(state.meta?.history || [], getContext().chat || [], op);
+        }
+        saveState();
+        refreshInjection();
+        close();
+        renderPanel();
+        setStatus(`已更新「${card.subject || card.type}」。`);
+    };
+
+    modal.querySelector('.factledger-modal-close')?.addEventListener('click', close);
+    modal.querySelector('#factledger_edit_cancel')?.addEventListener('click', close);
+    modal.querySelector('#factledger_edit_save')?.addEventListener('click', () => {
+        const charId = card.ref.charId;
+        const ops = [];
+        if (kind === 'field') {
+            const value = valueOf('value');
+            if (!value) { showError('值不能为空。'); return; }
+            if (value !== String(entity.current ?? entity ?? '')) {
+                ops.push({ op: 'set', character: charId, field: card.ref.field, value, manual: true });
+            }
+        } else if (kind === 'item') {
+            const name = valueOf('name');
+            const quantity = Number(valueOf('quantity'));
+            if (!name) { showError('物品名称不能为空。'); return; }
+            if (!Number.isFinite(quantity) || quantity < 0) { showError('数量必须是不小于 0 的数字。'); return; }
+            if (name !== entity.name) {
+                ops.push({
+                    op: 'add_item',
+                    character: charId,
+                    item: {
+                        id: entity.id,
+                        name,
+                        kind: entity.kind || 'item',
+                        access: entityAccess(entity, 'public'),
+                    },
+                });
+            }
+            if (quantity !== Number(entity.quantity ?? 1)) {
+                ops.push({ op: 'set_item_quantity', character: charId, item: entity.id, quantity });
+            }
+        } else if (kind === 'relation') {
+            const type = valueOf('type');
+            if (!type) { showError('关系不能为空。'); return; }
+            if (type !== (entity.type || '')) {
+                ops.push({ op: 'set_relation', from: charId, to: entity.target || entity.targetName, type });
+            }
+        } else if (kind === 'skill') {
+            const name = valueOf('name');
+            const level = valueOf('level');
+            if (!name) { showError('功法名称不能为空。'); return; }
+            if (name !== entity.name) {
+                ops.push({
+                    op: 'add_skill',
+                    character: charId,
+                    skill: {
+                        id: entity.id,
+                        name,
+                        level: level || entity.level || '',
+                        access: entityAccess(entity, 'public'),
+                    },
+                });
+            } else if (level !== (entity.level || '')) {
+                ops.push({ op: 'set_skill', character: charId, skill: entity.id, level });
+            }
+        }
+        if (!ops.length) { close(); return; }
+        finish(ops);
     });
 }
 
@@ -2399,6 +2847,7 @@ function renderHealth(body) {
         showOthers: settings.showOthers,
         skillLabel: preset.skillLabel,
         fieldLabels: preset.fieldLabels,
+        levelField: preset.levelField,
         recentText: '',
         fieldOrder: preset.fieldOrder,
         protagonistId: getProtagonist()?.id || '',
@@ -2406,6 +2855,11 @@ function renderHealth(body) {
     });
     const issues = healthCheck(state, { injection, tokenBudget: settings.injectBudget });
     const missingGenders = missingGenderCharacters(state);
+    const sectLabel = preset.fieldLabels?.sect || '';
+    const missingSects = sectLabel ? missingFieldCharacters(state, 'sect') : [];
+    const protagonist = getProtagonist();
+    const protagonistSect = stateValue(protagonist?.state?.sect);
+    const duplicates = duplicateCharacterGroups(state);
     const history = Array.isArray(state.meta?.history) ? state.meta.history : [];
     const historyKb = Math.max(1, Math.round(JSON.stringify(history).length / 1024));
 
@@ -2448,12 +2902,35 @@ function renderHealth(body) {
             <div><strong>健康检查</strong></div>
             ${issues.length ? issues.map((item) => `<div class="factledger-muted">${escapeHtml(item)}</div>`).join('') : '<div class="factledger-muted">无告警</div>'}
         </div>
+        ${duplicates.length ? `
+        <div class="factledger-card">
+            <div><strong>重复角色</strong> <span class="factledger-badge warn">${duplicates.length}</span></div>
+            <div class="factledger-muted">同名记录会合并到资料最多的一条；关系、场景和物品引用会一起更新。</div>
+            <div class="factledger-actions">
+                ${duplicates.map((group) => `<button class="menu_button" data-merge-name="${escapeHtml(group.name)}">合并 ${escapeHtml(group.name)}（${group.ids.length}）</button>`).join('')}
+            </div>
+        </div>` : ''}
+        ${protagonist && sectLabel ? `
+        <div class="factledger-card">
+            <div><strong>主角${escapeHtml(sectLabel)}</strong> <span class="factledger-muted">${escapeHtml(protagonistSect || '未记录')}</span></div>
+            <div class="factledger-actions">
+                <button class="menu_button" data-sect-fix="${escapeHtml(protagonist.id)}">编辑${escapeHtml(sectLabel)}</button>
+            </div>
+        </div>` : ''}
         ${missingGenders.length ? `
         <div class="factledger-card">
             <div><strong>性别缺失</strong> <span class="factledger-badge warn">${missingGenders.length}</span></div>
             <div class="factledger-muted">以下在场角色建档时没有写 gender，点名字补录。</div>
             <div class="factledger-actions">
                 ${missingGenders.map((character) => `<button class="menu_button" data-gender-fix="${escapeHtml(character.id)}">${escapeHtml(character.name || character.id)}</button>`).join('')}
+            </div>
+        </div>` : ''}
+        ${missingSects.length ? `
+        <div class="factledger-card">
+            <div><strong>${escapeHtml(sectLabel)}缺失</strong> <span class="factledger-badge warn">${missingSects.length}</span></div>
+            <div class="factledger-muted">以下在场角色没有记录${escapeHtml(sectLabel)}，点名字补录。</div>
+            <div class="factledger-actions">
+                ${missingSects.map((character) => `<button class="menu_button" data-sect-fix="${escapeHtml(character.id)}">${escapeHtml(character.name || character.id)}</button>`).join('')}
             </div>
         </div>` : ''}
         <details class="factledger-card">
@@ -2478,6 +2955,54 @@ function renderHealth(body) {
     body.querySelectorAll('[data-gender-fix]').forEach((button) => {
         button.addEventListener('click', () => openGenderEditor(button.dataset.genderFix));
     });
+    body.querySelectorAll('[data-sect-fix]').forEach((button) => {
+        button.addEventListener('click', () => openSectEditor(button.dataset.sectFix));
+    });
+    body.querySelectorAll('[data-merge-name]').forEach((button) => {
+        button.addEventListener('click', () => mergeDuplicateCharacters(button.dataset.mergeName));
+    });
+}
+
+/** 把同名 NPC 记录合并到资料最多的一条；合并 op 写入当前分支最后一条记录。 */
+function mergeDuplicateCharacters(name) {
+    const state = getState();
+    const group = duplicateCharacterGroups(state).find((item) => item.name === name);
+    if (!group) {
+        setStatus('没有可合并的重复角色。');
+        return;
+    }
+    if (!window.confirm(`把「${name}」的 ${group.ids.length} 条记录合并到 ${group.keep}？`)) return;
+    const branch = selectHistoryBranch(state.meta?.history || [], getContext().chat || []);
+    const last = branch[branch.length - 1];
+    if (!last) {
+        setStatus('当前分支还没有结算记录，先结算一次再合并。');
+        return;
+    }
+    if (!Array.isArray(last.ops)) last.ops = [];
+    const ops = group.ids
+        .filter((id) => id !== group.keep)
+        .map((id) => ({ op: 'merge_character', fromId: id, toId: group.keep, evidence: 'manual', confidence: 1 }));
+    if (!ops.length) return;
+    let result;
+    try {
+        result = applyOps(state, ops, {
+            confidenceThreshold: 0,
+            reviewThreshold: 0,
+            npcFields: [getGenrePreset(getSettings().genrePreset).levelField].filter(Boolean),
+        });
+    } catch (err) {
+        setStatus(`合并失败：${err.message}`);
+        return;
+    }
+    if (result.rejected?.length) {
+        setStatus(`合并失败：${result.rejected[0].reason || '未知原因'}`);
+        return;
+    }
+    last.ops.push(...ops);
+    saveState();
+    refreshInjection();
+    renderPanel();
+    setStatus(`已合并「${name}」的 ${ops.length + 1} 条记录。`);
 }
 
 /** 健康页的性别补录：只改字段，不动正文与日志。 */
@@ -2532,6 +3057,73 @@ function openGenderEditor(characterId) {
         close();
         renderPanel();
         setStatus(`已把「${character.name || character.id}」的性别补为${value}。`);
+    });
+}
+
+/** 健康页的宗门补录：和性别一样只改字段，回放不丢。 */
+function openSectEditor(characterId) {
+    const character = getState().characters?.[characterId];
+    if (!character) {
+        setStatus('找不到这个角色。');
+        return;
+    }
+    const preset = getGenrePreset(getSettings().genrePreset);
+    const label = preset.fieldLabels?.sect || '宗门';
+    const current = String(character.state?.sect?.current ?? character.state?.sect ?? '');
+    document.getElementById('factledger_sect_modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'factledger_sect_modal';
+    modal.className = 'factledger-modal';
+    modal.innerHTML = `
+        <div class="factledger-modal-content">
+            <div class="factledger-modal-head">
+                <strong>补录${escapeHtml(label)}</strong>
+                <span class="factledger-modal-close" title="关闭">✕</span>
+            </div>
+            <div class="factledger-muted">角色：${escapeHtml(character.name || character.id)}</div>
+            <div class="factledger-row">
+                <label for="factledger_sect_value">${escapeHtml(label)}</label>
+                <input type="text" id="factledger_sect_value" class="text_pole" value="${escapeHtml(current)}" placeholder="如：青云剑宗内门" />
+            </div>
+            <div class="factledger-actions">
+                <button class="menu_button" id="factledger_sect_save">保存</button>
+                <button class="menu_button" id="factledger_sect_cancel">取消</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    const close = () => modal.remove();
+    const save = () => {
+        const input = document.getElementById('factledger_sect_value');
+        const value = String(input?.value ?? '').trim();
+        if (!value) {
+            setStatus(`${label}不能为空。`);
+            input?.focus();
+            return;
+        }
+        appendManualField(getState().meta?.history || [], getContext().chat || [], characterId, 'sect', value);
+        if (!character.state) character.state = {};
+        const entry = character.state.sect && typeof character.state.sect === 'object'
+            ? character.state.sect
+            : { current: '', history: [] };
+        entry.current = value;
+        if (!Array.isArray(entry.history)) entry.history = [];
+        entry.access = entry.access || 'public';
+        character.state.sect = entry;
+        saveState();
+        refreshInjection();
+        close();
+        renderPanel();
+        setStatus(`已把「${character.name || character.id}」的${label}补为${value}。`);
+    };
+    modal.querySelector('.factledger-modal-close')?.addEventListener('click', close);
+    modal.querySelector('#factledger_sect_cancel')?.addEventListener('click', close);
+    modal.querySelector('#factledger_sect_save')?.addEventListener('click', save);
+    modal.querySelector('#factledger_sect_value')?.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        save();
     });
 }
 
@@ -3060,28 +3652,101 @@ function registerEvents() {
             unlockSending('chat-changed');
         }
         restoreLedgerFromHistory('chat-changed');
+        pendingResettleIndex = -1;
+        generationActive = false;
+        // 聊天加载完成后再写版本：初始化时写会被聊天文件里的旧 metadata 覆盖。
+        const changedState = getState();
+        if (changedState.meta.extensionVersion !== VERSION) {
+            changedState.meta.extensionVersion = VERSION;
+            saveState();
+        }
         refreshInjection();
         renderPanel();
         setStatus(`已切换聊天：${ctx.getCurrentChatId?.() ?? ''}`);
     });
 
     eventSource.on(eventTypes.MESSAGE_RECEIVED, () => {
+        generationActive = false;
         const state = getState();
         const settings = getSettings();
         state.meta.messagesSinceSettle = (state.meta.messagesSinceSettle || 0) + 1;
+        // swipe 留下的待重算楼层：新正文此刻才落定，优先只重算这一条，不再整体结算。
+        const pendingTarget = pendingResettleIndex;
+        pendingResettleIndex = -1;
+        // 自动结算的决策路径全部落盘，否则“没触发”和“触发了但没记录”分不清。
+        const autoEvent = {
+            at: new Date().toISOString(),
+            since: state.meta.messagesSinceSettle,
+            interval: Number(settings.autoInterval),
+            enabled: Boolean(settings.enabled),
+            running: settleRunning,
+            step: 'received',
+        };
+        state.meta.lastAutoEvent = autoEvent;
         saveState();
         refreshInjection();
         renderPanel();
 
-        if (!settings.enabled || settings.autoInterval <= 0) return;
-        if (state.meta.messagesSinceSettle < settings.autoInterval) return;
+        if (pendingTarget >= 0) {
+            const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+            if (chat[pendingTarget] && !chat[pendingTarget].is_user) {
+                autoEvent.step = 'resettle-pending';
+                saveState();
+                setTimeout(() => resettleMessage(pendingTarget, { auto: true }), 300);
+                return;
+            }
+        }
+
+        if (!settings.enabled || settings.autoInterval <= 0) {
+            autoEvent.step = 'disabled-or-zero';
+            saveState();
+            return;
+        }
+        if (state.meta.messagesSinceSettle < settings.autoInterval) {
+            autoEvent.step = 'below-interval';
+            saveState();
+            return;
+        }
         if (settleRunning) {
             // 结算期间到达的回复不能丢，等本轮结束后补一次。
             settleQueued = true;
+            autoEvent.step = 'running';
+            saveState();
+            return;
+        }
+        // 后台标签下请求会被挂起，等切回可见再结算。
+        if (document.visibilityState === 'hidden') {
+            settleQueued = true;
+            autoEvent.step = 'hidden-deferred';
+            saveState();
             return;
         }
         if (settings.useCurrentConnection || getProfileId() || settings.fallbackProfileId) {
-            settleLedger().catch((err) => error('auto settle failed', err));
+            const chatId = currentChatId();
+            autoEvent.step = 'scheduled';
+            saveState();
+            setTimeout(() => {
+                if (chatId !== currentChatId()) {
+                    const live = getState();
+                    live.meta.lastAutoEvent = { ...autoEvent, at: new Date().toISOString(), step: 'chat-changed' };
+                    saveState();
+                    return;
+                }
+                if (settleRunning) {
+                    settleQueued = true;
+                    const live = getState();
+                    live.meta.lastAutoEvent = { ...autoEvent, at: new Date().toISOString(), step: 'running-at-timer' };
+                    saveState();
+                    return;
+                }
+                const live = getState();
+                live.meta.lastAutoEvent = { ...autoEvent, at: new Date().toISOString(), step: 'settling' };
+                saveState();
+                settleLedger().catch((err) => error('auto settle failed', err));
+            }, AUTO_SETTLE_DELAY_MS);
+        } else {
+            autoEvent.step = 'no-profile';
+            saveState();
         }
     });
 
@@ -3107,8 +3772,68 @@ function registerEvents() {
     };
 
     eventSource.on(eventTypes.MESSAGE_EDITED, (index) => invalidateFrom(index, 'message-edited'));
-    eventSource.on(eventTypes.MESSAGE_SWIPED, (index) => invalidateFrom(index, 'message-swiped'));
+    // swipe 触发时新正文还没生成，此刻提取会读到旧内容或半截正文，先只做回放并记下待重算。
+    eventSource.on(eventTypes.MESSAGE_SWIPED, (index) => {
+        const target = Number(index);
+        const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+        restoreLedgerFromHistory('message-swiped');
+        refreshInjection();
+        renderPanel();
+        if (!Number.isFinite(target) || !chat[target] || chat[target].is_user) return;
+        if (!getSettings().autoResettleOnEdit) {
+            setStatus(`第 ${target} 条正文已改，该轮台账已失效；可在台账日志页点「重算这一条」。`);
+            return;
+        }
+        pendingResettleIndex = target;
+        setStatus(`第 ${target} 条正在重新生成，结束后重算台账。`);
+    });
+
+    eventSource.on(eventTypes.GENERATION_STARTED, () => {
+        generationActive = true;
+    });
+    // 生成结束或中止后才允许提取；中止时也重算，让台账与当前正文对齐。
+    const flushPendingResettle = () => {
+        generationActive = false;
+        const target = pendingResettleIndex;
+        pendingResettleIndex = -1;
+        const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+        if (target >= 0 && chat[target] && !chat[target].is_user) {
+            // 让新正文先落定再提取。
+            setTimeout(() => {
+                resettleMessage(target, { auto: true });
+            }, 500);
+        }
+        if (settleQueued && target < 0) {
+            settleQueued = false;
+            setTimeout(() => {
+                settleLedger().catch((err) => error('queued settle failed', err));
+            }, 500);
+        }
+    };
+    if (eventTypes.GENERATION_ENDED) eventSource.on(eventTypes.GENERATION_ENDED, flushPendingResettle);
+    if (eventTypes.GENERATION_STOPPED) eventSource.on(eventTypes.GENERATION_STOPPED, flushPendingResettle);
+
+    // 切回可见时立即补跑后台期间攒下的结算。
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        if (settleRunning) return;
+        const target = pendingResettleIndex;
+        pendingResettleIndex = -1;
+        if (target >= 0) {
+            setTimeout(() => {
+                resettleMessage(target, { auto: true });
+            }, 300);
+            return;
+        }
+        if (settleQueued) {
+            settleQueued = false;
+            setTimeout(() => {
+                settleLedger().catch((err) => error('queued settle failed', err));
+            }, 300);
+        }
+    });
     eventSource.on(eventTypes.MESSAGE_DELETED, () => {
+        pendingResettleIndex = -1;
         restoreLedgerFromHistory('message-deleted');
         refreshInjection();
         renderPanel();
@@ -3149,6 +3874,14 @@ jQuery(async function () {
         createMenuButton();
         createPanel();
         initializeState();
+        // 把实际加载的版本写进聊天数据：刷新后读文件就能确认跑的是哪一版。
+        {
+            const bootState = getState();
+            if (bootState.meta.extensionVersion !== VERSION) {
+                bootState.meta.extensionVersion = VERSION;
+                saveState();
+            }
+        }
         registerEvents();
         registerSlashCommands();
         renderPanel();
