@@ -49,7 +49,7 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '../../../slash-commands/Sla
 
 const MODULE_NAME = 'factLedger';
 const INJECTION_KEY = 'factledger';
-const VERSION = '0.16.36';
+const VERSION = '0.16.38';
 const EXTENSION_DIR = new URL('.', import.meta.url).pathname;
 // Matches SillyTavern's extension_prompt_types / extension_prompt_roles.
 // IN_PROMPT merges into the main system prompt (before world info and chat).
@@ -777,7 +777,7 @@ async function resettleMessage(index, options = {}) {
         }
 
         ctx.chatMetadata[MODULE_NAME] = state;
-        saveState();
+        // 保存统一交给 finally 里的追踪写入。
         refreshInjection();
         renderPanel();
         const count = result.applied.filter((op) => !op?.pendingTier).length;
@@ -820,6 +820,26 @@ let resettleChatId = '';
 // 生成期间不发起提取：读到的是旧 swipe 或半截正文，会造出正文里没有的角色。
 let generationActive = false;
 let pendingResettleIndex = -1;
+let pendingResettleHash = '';
+
+/** 消费待重算楼层：只有正文确实被新内容替换过才重算，生成失败（空 swipe）时不跑。 */
+function consumePendingResettle() {
+    const target = pendingResettleIndex;
+    const beforeHash = pendingResettleHash;
+    pendingResettleIndex = -1;
+    pendingResettleHash = '';
+    if (target < 0) return false;
+    const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
+    const message = chat[target];
+    if (!message || message.is_user) return false;
+    const text = String(message.mes || '').trim();
+    // 502/中止时 swipe 会被清成空串，或内容根本没变：这两种都不该重算。
+    if (!text || messageHash(message) === beforeHash) return false;
+    setTimeout(() => {
+        resettleMessage(target, { auto: true });
+    }, 500);
+    return true;
+}
 // 结算看门狗：任何一轮超过这个时间仍未结束，强制复位，避免把后续结算全部堵死。
 const SETTLE_WATCHDOG_MS = 120000;
 let settleWatchdog = null;
@@ -1526,7 +1546,7 @@ async function settleLedger(options = {}) {
         nextState.meta.review = [...pendingReview, ...freshReview].slice(-50);
 
         ctx.chatMetadata[MODULE_NAME] = nextState;
-        saveState();
+        // 保存统一交给 finally 里的追踪写入，避免一次结算触发两次 /api/chats/save。
         refreshInjection();
         renderPanel();
         lastExtractionFailure = { kind: '', at: 0 };
@@ -3653,6 +3673,7 @@ function registerEvents() {
         }
         restoreLedgerFromHistory('chat-changed');
         pendingResettleIndex = -1;
+        pendingResettleHash = '';
         generationActive = false;
         // 聊天加载完成后再写版本：初始化时写会被聊天文件里的旧 metadata 覆盖。
         const changedState = getState();
@@ -3670,9 +3691,6 @@ function registerEvents() {
         const state = getState();
         const settings = getSettings();
         state.meta.messagesSinceSettle = (state.meta.messagesSinceSettle || 0) + 1;
-        // swipe 留下的待重算楼层：新正文此刻才落定，优先只重算这一条，不再整体结算。
-        const pendingTarget = pendingResettleIndex;
-        pendingResettleIndex = -1;
         // 自动结算的决策路径全部落盘，否则“没触发”和“触发了但没记录”分不清。
         const autoEvent = {
             at: new Date().toISOString(),
@@ -3687,44 +3705,35 @@ function registerEvents() {
         refreshInjection();
         renderPanel();
 
-        if (pendingTarget >= 0) {
-            const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
-            if (chat[pendingTarget] && !chat[pendingTarget].is_user) {
-                autoEvent.step = 'resettle-pending';
-                saveState();
-                setTimeout(() => resettleMessage(pendingTarget, { auto: true }), 300);
-                return;
-            }
+        // swipe 留下的待重算楼层：只有新正文确实落定才重算，生成失败时不动。
+        if (consumePendingResettle()) {
+            autoEvent.step = 'resettle-pending';
+            return;
         }
 
         if (!settings.enabled || settings.autoInterval <= 0) {
             autoEvent.step = 'disabled-or-zero';
-            saveState();
             return;
         }
         if (state.meta.messagesSinceSettle < settings.autoInterval) {
             autoEvent.step = 'below-interval';
-            saveState();
             return;
         }
         if (settleRunning) {
             // 结算期间到达的回复不能丢，等本轮结束后补一次。
             settleQueued = true;
             autoEvent.step = 'running';
-            saveState();
             return;
         }
         // 后台标签下请求会被挂起，等切回可见再结算。
         if (document.visibilityState === 'hidden') {
             settleQueued = true;
             autoEvent.step = 'hidden-deferred';
-            saveState();
             return;
         }
         if (settings.useCurrentConnection || getProfileId() || settings.fallbackProfileId) {
             const chatId = currentChatId();
             autoEvent.step = 'scheduled';
-            saveState();
             setTimeout(() => {
                 if (chatId !== currentChatId()) {
                     const live = getState();
@@ -3785,25 +3794,18 @@ function registerEvents() {
             return;
         }
         pendingResettleIndex = target;
+        pendingResettleHash = messageHash(chat[target]);
         setStatus(`第 ${target} 条正在重新生成，结束后重算台账。`);
     });
 
     eventSource.on(eventTypes.GENERATION_STARTED, () => {
         generationActive = true;
     });
-    // 生成结束或中止后才允许提取；中止时也重算，让台账与当前正文对齐。
+    // 生成结束或中止后才允许提取；只有正文确实更新了才重算，生成失败时不动。
     const flushPendingResettle = () => {
         generationActive = false;
-        const target = pendingResettleIndex;
-        pendingResettleIndex = -1;
-        const chat = Array.isArray(getContext().chat) ? getContext().chat : [];
-        if (target >= 0 && chat[target] && !chat[target].is_user) {
-            // 让新正文先落定再提取。
-            setTimeout(() => {
-                resettleMessage(target, { auto: true });
-            }, 500);
-        }
-        if (settleQueued && target < 0) {
+        if (consumePendingResettle()) return;
+        if (settleQueued) {
             settleQueued = false;
             setTimeout(() => {
                 settleLedger().catch((err) => error('queued settle failed', err));
@@ -3817,14 +3819,7 @@ function registerEvents() {
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState !== 'visible') return;
         if (settleRunning) return;
-        const target = pendingResettleIndex;
-        pendingResettleIndex = -1;
-        if (target >= 0) {
-            setTimeout(() => {
-                resettleMessage(target, { auto: true });
-            }, 300);
-            return;
-        }
+        if (consumePendingResettle()) return;
         if (settleQueued) {
             settleQueued = false;
             setTimeout(() => {
@@ -3834,6 +3829,7 @@ function registerEvents() {
     });
     eventSource.on(eventTypes.MESSAGE_DELETED, () => {
         pendingResettleIndex = -1;
+        pendingResettleHash = '';
         restoreLedgerFromHistory('message-deleted');
         refreshInjection();
         renderPanel();
